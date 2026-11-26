@@ -25,6 +25,15 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
   setSceneMode(enabled) {
     ipcRenderer.send('desktop:scene-mode', enabled);
   },
+  requestDisplays() {
+    ipcRenderer.send('desktop:request-displays');
+  },
+  onDisplays(callback) {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, snapshot) => callback(snapshot);
+    ipcRenderer.on('desktop:displays', listener);
+    return () => ipcRenderer.removeListener('desktop:displays', listener);
+  },
   requestSurfaces() {
     ipcRenderer.send('desktop:request-surfaces');
   },

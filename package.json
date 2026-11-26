@@ -1,6 +1,6 @@
 {
   "name": "monglemong",
-  "version": "0.9.2",
+  "version": "0.10.0",
   "description": "몽글몽 — 바탕화면에서 함께 자라는 작은 모험",
   "private": true,
   "type": "module",
@@ -34,7 +34,8 @@
     "test:account": "node --test tests/account-client.test.js",
     "prestart": "npm run check:public -- --worktree",
     "predist:win": "npm run check:public -- --worktree",
-    "predist:win:user": "npm run check:public -- --worktree"
+    "predist:win:user": "npm run check:public -- --worktree",
+    "test:multi-ui": "node tests/multi-companions-ui.mjs"
   },
   "build": {
     "appId": "studio.mori.desktop",

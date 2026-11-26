@@ -1,5 +1,5 @@
 /**
- * Ephemeral desktop placement, separate from the saved, one-dimensional RPG.
+ * Ephemeral desktop placement, separate from the saved RPG state for each deployed companion.
  * All coordinates are overlay-local DIPs; x is the sprite centre and footY is
  * its bottom. Native snapshots contain only the visible portions of top edges.
  */
@@ -25,6 +25,7 @@ export function createSurfaceWalker({ gravity = 1200, snapDistance = 56 } = {}) 
       const hasParent = typeof surface.windowId === 'string' && surface.windowId
         && Number.isFinite(surface.anchorX) && Number.isFinite(surface.windowWidth) && surface.windowWidth > 0;
       surfaces.push({ id: surface.id, kind: surface.kind, x: surface.x, y: surface.y, width: surface.width,
+        ...(typeof surface.displayId === 'string' ? { displayId: surface.displayId } : {}),
         ...(surface.kind === 'window' ? {
           windowId: hasParent ? surface.windowId : surface.id,
           anchorX: hasParent ? surface.anchorX : surface.x,
@@ -35,35 +36,48 @@ export function createSurfaceWalker({ gravity = 1200, snapDistance = 56 } = {}) 
     snapshot = {
       supported: source.supported === true,
       status: source.status === 'ready' ? 'ready' : 'unavailable',
-      width: clamp(finite(source.width, snapshot.width), 1, 20000),
-      height: clamp(finite(source.height, snapshot.height), 1, 20000),
+      width: clamp(finite(source.width, snapshot.width), 1, 65536),
+      height: clamp(finite(source.height, snapshot.height), 1, 65536),
       surfaces,
     };
   }
 
   function geometry(options) {
-    const width = clamp(finite(options.width, snapshot.width), 1, 20000);
-    const height = clamp(finite(options.height, snapshot.height), 1, 20000);
-    const size = clamp(finite(options.size, 192), 1, 20000);
-    const half = Math.min(size / 2, width / 2);
+    const width = clamp(finite(options.width, snapshot.width), 1, 65536);
+    const height = clamp(finite(options.height, snapshot.height), 1, 65536);
+    const size = clamp(finite(options.size, 192), 1, 65536);
+    const supplied = options.bounds && typeof options.bounds === 'object' ? options.bounds : {};
+    const left = clamp(finite(supplied.x, 0), 0, width - 1);
+    const top = clamp(finite(supplied.y, 0), 0, height - 1);
+    const areaWidth = clamp(finite(supplied.width, width - left), 1, width - left);
+    const areaHeight = clamp(finite(supplied.height, height - top), 1, height - top);
+    const floorY = clamp(finite(supplied.floorY, top + areaHeight), top + 1, top + areaHeight);
+    const half = Math.min(size / 2, areaWidth / 2);
+    const low = left + half, high = left + areaWidth - half;
+    const headroom = Math.min(top + size, floorY);
+    const displayId = typeof options.displayId === 'string' ? options.displayId : null;
     const ready = options.enabled !== false && snapshot.supported && snapshot.status === 'ready';
-    const nativeFloor = ready && snapshot.surfaces.find(surface => surface.id === FLOOR_ID && surface.kind !== 'window');
-    // The overlay is the primary display work area: its bottom is the taskbar
-    // edge (or screen bottom). Never retain an old bottom after display resize.
-    const floor = { id: FLOOR_ID, kind: nativeFloor ? nativeFloor.kind : 'floor', x: 0, y: height, width };
+    const belongs = surface => !displayId || !surface.displayId || surface.displayId === displayId;
+    const nativeFloor = ready && snapshot.surfaces.find(surface => surface.kind !== 'window' && belongs(surface)
+      && (displayId ? surface.displayId === displayId || (!surface.displayId && surface.id === FLOOR_ID) : surface.id === FLOOR_ID));
+    // Caller geometry wins over stale native snapshots during hot-plug/resize.
+    // Each monitor has its own work-area floor; virtual-desktop gaps are not floors.
+    const floor = { id: displayId ? `${FLOOR_ID}:${displayId}` : FLOOR_ID,
+      kind: nativeFloor ? nativeFloor.kind : 'floor', x: left, y: floorY, width: areaWidth,
+      ...(displayId ? { displayId } : {}) };
     const surfaces = [floor];
     const windows = new Map();
     if (ready) {
       for (const surface of snapshot.surfaces) {
-        if (surface.kind !== 'window' || surface.id === FLOOR_ID) continue;
+        if (surface.kind !== 'window' || surface.id === FLOOR_ID || !belongs(surface)) continue;
         if (!windows.has(surface.windowId)) windows.set(surface.windowId, surface);
-        const left = Math.max(0, surface.x);
-        const right = Math.min(width, surface.x + surface.width);
-        if (right - left < size || surface.y < size || surface.y >= height) continue;
-        surfaces.push({ ...surface, x: left, width: right - left });
+        const edgeLeft = Math.max(left, surface.x);
+        const edgeRight = Math.min(left + areaWidth, surface.x + surface.width);
+        if (edgeRight - edgeLeft < size || surface.y < headroom || surface.y >= floorY) continue;
+        surfaces.push({ ...surface, x: edgeLeft, width: edgeRight - edgeLeft });
       }
     }
-    return { width, height, size, half, ready, floor, surfaces, windows };
+    return { width, height, size, half, low, high, top, headroom, floorY, displayId, ready, floor, surfaces, windows };
   }
 
   function key(options) {
@@ -74,18 +88,22 @@ export function createSurfaceWalker({ gravity = 1200, snapDistance = 56 } = {}) 
     let character = characters.get(key(options));
     if (!character) {
       character = {
-        x: clamp(finite(options.x, bounds.width / 2), bounds.half, bounds.width - bounds.half),
-        footY: bounds.height, facing: 1, velocityY: 0,
+        x: clamp(finite(options.x, (bounds.low + bounds.high) / 2), bounds.low, bounds.high),
+        footY: bounds.floorY, displayId: bounds.displayId, facing: 1, velocityY: 0,
         surface: { ...bounds.floor }, dragging: false, action: 'idle',
       };
       characters.set(key(options), character);
+    } else if (character.displayId !== bounds.displayId) {
+      character.displayId = bounds.displayId;
+      character.x = clamp(finite(options.x, character.x), bounds.low, bounds.high);
+      attach(character, bounds.floor, bounds);
     }
     return character;
   }
 
   function pose(character) {
     return {
-      x: character.x, footY: character.footY,
+      x: character.x, footY: character.footY, displayId: character.displayId,
       surfaceId: character.surface?.id ?? null,
       surfaceKind: character.surface?.kind ?? null,
       action: character.action, facing: character.facing,
@@ -112,8 +130,8 @@ export function createSurfaceWalker({ gravity = 1200, snapDistance = 56 } = {}) 
   }
 
   function setFreePosition(character, options, bounds) {
-    character.x = clamp(finite(options.x, character.x), bounds.half, bounds.width - bounds.half);
-    character.footY = clamp(finite(options.footY, character.footY), Math.min(bounds.size, bounds.height), bounds.height);
+    character.x = clamp(finite(options.x, character.x), bounds.low, bounds.high);
+    character.footY = clamp(finite(options.footY, character.footY), bounds.headroom, bounds.floorY);
     character.surface = null;
     character.velocityY = 0;
   }
@@ -154,7 +172,7 @@ export function createSurfaceWalker({ gravity = 1200, snapDistance = 56 } = {}) 
     if (character.dragging) release(options);
     if (!bounds.ready || command === 'fight') return floor(character, options, bounds);
 
-    character.footY = clamp(character.footY, Math.min(bounds.size, bounds.height), bounds.height);
+    character.footY = clamp(character.footY, bounds.headroom, bounds.floorY);
     character.action = 'idle';
     if (character.surface) {
       const previous = character.surface;
@@ -173,12 +191,12 @@ export function createSurfaceWalker({ gravity = 1200, snapDistance = 56 } = {}) 
           // Visible segments can move or be renumbered when another window
           // covers them. Only the full parent window can carry its passenger.
           character.x += parent.anchorX - previous.anchorX;
-          character.footY = clamp(parent.y, Math.min(bounds.size, bounds.height), bounds.height);
+          character.footY = clamp(parent.y, bounds.headroom, bounds.floorY);
           if (parent.windowWidth !== previous.windowWidth && parent.windowWidth >= bounds.size) {
             character.x = clamp(character.x, parent.anchorX + bounds.size / 2,
               parent.anchorX + parent.windowWidth - bounds.size / 2);
           }
-          character.x = clamp(character.x, bounds.half, bounds.width - bounds.half);
+          character.x = clamp(character.x, bounds.low, bounds.high);
           current = bounds.surfaces.find(surface => surface.kind === 'window'
             && surface.windowId === previous.windowId
             && character.x >= surface.x + bounds.size / 2
@@ -191,7 +209,7 @@ export function createSurfaceWalker({ gravity = 1200, snapDistance = 56 } = {}) 
         }
       }
     }
-    character.x = clamp(character.x, bounds.half, bounds.width - bounds.half);
+    character.x = clamp(character.x, bounds.low, bounds.high);
 
     if (character.surface) {
       if (!options.paused && command === 'wander' && dt > 0) {
@@ -224,7 +242,7 @@ export function createSurfaceWalker({ gravity = 1200, snapDistance = 56 } = {}) 
         && surface.y >= previousY && surface.y <= nextY;
     }).sort((a, b) => a.y - b.y)[0];
     if (collision) attach(character, collision, bounds);
-    else character.footY = Math.min(bounds.height, nextY);
+    else character.footY = Math.min(bounds.floorY, nextY);
     return pose(character);
   }
 

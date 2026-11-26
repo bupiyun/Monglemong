@@ -275,3 +275,46 @@ test('malformed surfaces cannot create invalid positions or override the floor',
   assert.equal(Number.isFinite(fallback.x), true);
   assert.equal(fallback.footY, 900);
 });
+
+
+test('each companion uses its monitor work-area floor and never the virtual desktop gap', () => {
+  const walker = createSurfaceWalker();
+  walker.updateSnapshot({ supported: true, status: 'ready', width: 2400, height: 1500, surfaces: [
+    { id: 'desktop-floor:left', kind: 'taskbar', displayId: 'left', x: 0, y: 860, width: 1000 },
+    { id: 'desktop-floor:right', kind: 'floor', displayId: 'right', x: 1200, y: 1460, width: 1200 },
+  ] });
+  const left = { ...base, characterId: 'left-friend', displayId: 'left', width: 2400, height: 1500,
+    bounds: { x: 0, y: 0, width: 1000, height: 860, floorY: 860 }, x: 500 };
+  const right = { ...base, characterId: 'right-friend', displayId: 'right', width: 2400, height: 1500,
+    bounds: { x: 1200, y: 500, width: 1200, height: 960, floorY: 1460 }, x: 1800 };
+  assert.equal(walker.step(left).footY, 860);
+  assert.equal(walker.step(left).surfaceKind, 'taskbar');
+  assert.equal(walker.step(right).footY, 1460);
+  assert.equal(walker.step({ ...right, enabled: false, x: 1100 }).x, 1296);
+  const tooHigh = walker.beginDrag({ ...right, footY: 100 });
+  assert.equal(tooHigh.footY, 692);
+  assert.equal(walker.step(left).footY, 860);
+});
+
+test('cross-monitor drag attaches only to the destination monitor and survives disconnect', () => {
+  const walker = createSurfaceWalker();
+  walker.updateSnapshot({ supported: true, status: 'ready', width: 2400, height: 1200, surfaces: [
+    { ...ledge('left-window', 0, 700, 1000), displayId: 'left' },
+    { ...ledge('right-window', 1200, 800, 1000), displayId: 'right' },
+    // A stale/malformed edge from another monitor must not catch this actor.
+    { ...ledge('wrong-monitor', 1200, 600, 1000), displayId: 'left' },
+  ] });
+  const left = { ...base, width: 2400, height: 1200, displayId: 'left',
+    bounds: { x: 0, y: 0, width: 1000, height: 900, floorY: 900 } };
+  const right = { ...left, displayId: 'right', bounds: { x: 1200, y: 300, width: 1200, height: 860, floorY: 1160 }, x: 1700 };
+  walker.beginDrag({ ...left, footY: 700 });
+  assert.equal(walker.release({ ...right, footY: 800 }).surfaceId, 'right-window');
+  assert.equal(walker.step({ ...right, command: 'rest' }).footY, 800);
+  assert.equal(walker.release({ ...right, footY: 600 }).surfaceId, null);
+  assert.equal(fallUntilGrounded(walker, right).surfaceId, 'right-window');
+  const recovered = walker.step({ ...left, x: 500 });
+  assert.equal(recovered.displayId, 'left');
+  assert.equal(recovered.surfaceId, 'desktop-floor:left');
+  assert.equal(recovered.footY, 900);
+  assert.equal(recovered.x, 500);
+});

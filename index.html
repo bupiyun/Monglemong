@@ -15,7 +15,7 @@
   <div id="scenery" aria-hidden="true"><div class="sun-glow"></div><div class="motes"><i></i><i></i><i></i><i></i><i></i></div></div>
   <header id="topbar" class="interactive">
     <a class="brand" href="#" aria-label="몽글몽 홈"><span class="brand-mark">m<span>✦</span></span><div>몽글몽<small>MongleMong</small></div></a>
-    <div class="top-actions"><span class="version-tag">EARLY ACCESS <b>0.9.2</b></span><span class="divider"></span><button id="scene-toggle" class="icon-button" aria-label="배경 전환" title="배경 전환"></button><button id="pause-button" class="icon-button" aria-label="일시 정지" title="일시 정지"></button><button id="help-button" class="icon-button" aria-label="플레이 방법" title="플레이 방법"></button></div>
+    <div class="top-actions"><span class="version-tag">EARLY ACCESS <b>0.10.0</b></span><span class="divider"></span><button id="scene-toggle" class="icon-button" aria-label="배경 전환" title="배경 전환"></button><button id="pause-button" class="icon-button" aria-label="일시 정지" title="일시 정지"></button><button id="help-button" class="icon-button" aria-label="플레이 방법" title="플레이 방법"></button></div>
   </header>
   <main id="world" aria-label="카페몽의 모험 공간">
     <div class="place-label" aria-hidden="true"><span>THE LITTLE MEADOW</span><h1>카페몽의 작은 초원</h1><p><span class="weather-spark">✧</span> 맑음 · 모험하기 좋은 날</p></div>
@@ -30,9 +30,9 @@
       <button id="active-detail-button" class="profile-link">성격 · 취향 · 능력치 보기 <span>+</span></button>
     </section>
     <aside id="field-note" class="field-note interactive"><span class="note-icon">✧</span><div><strong id="quest-title">작은 모험의 시작</strong><p id="quest-copy">가방 속 던전 코어를 초원에 놓아 보세요.<br>카페몽의 첫 모험이 시작됩니다.</p><button id="guide-link">어떻게 플레이하나요?</button></div></aside>
-    <div id="drop-zone" aria-label="던전 코어 배치 영역"><span class="drop-plus">+</span><span>이곳에 던전 코어를 놓아 주세요</span></div>
+    <div id="drop-zones"></div>
     <div id="portals"></div><div id="monsters"></div><div id="effects" aria-hidden="true"></div>
-    <div id="character" class="character interactive" role="button" tabindex="0" aria-label="카페몽과 상호작용. 드래그하여 이동할 수 있습니다."><div id="speech" class="speech"></div><div class="character-shadow"></div><img id="character-sprite" src="assets/character-placeholder.svg" draggable="false" alt="카페몽"><div class="character-name"><span id="world-level">Lv.1</span><span id="world-name">카페몽</span><i></i></div></div>
+    <div id="characters" aria-label="화면에 함께하는 동료들"></div>
     <div id="character-menu" class="character-menu interactive" hidden><div class="popover-heading"><span id="character-menu-title">카페몽과 함께</span><button class="close-small" id="close-character" aria-label="캐릭터 메뉴 닫기">×</button></div><button id="pet-action">♡ <span>쓰다듬기</span></button><button id="talk-action">◌ <span>말 걸기</span></button><button id="feed-action">◒ <span>간식 주기</span><small>10 G</small></button><button id="adventure-action">⚔ <span>모험 보내기</span></button></div>
     <div id="pause-overlay" hidden><span>잠깐 쉬어 가요</span><p>카페몽과 초원의 시간이 멈췄어요.</p><button id="resume-button">계속하기</button></div>
   </main>
@@ -43,10 +43,10 @@
     <div id="tab-cores" class="tab-content"><div class="tab-intro"><h3>어디로 떠나 볼까요?</h3><p>코어를 초원으로 끌어 놓으면 던전이 열려요.</p></div><div id="core-list"></div><div class="placement-hint"><span>⌘</span><p>끌어 놓거나, 코어를 선택한 뒤<br>초원의 원하는 위치를 눌러 주세요.</p></div><button id="shop-button" class="secondary-button full"><span>+</span> 코어 상점 둘러보기</button></div>
     <div id="tab-companions" class="tab-content" hidden>
       <div class="tab-intro roster-heading"><div><h3>우리의 작은 동료들</h3><p>다른 성격, 같은 모험.</p></div><span id="roster-count">1 / 1</span></div>
-      <p class="roster-help">카드를 눌러 취향과 능력치를 확인해 보세요.</p>
+      <p class="roster-help">함께하는 동료 <strong id="deployed-count">1 / 6</strong> · 카드를 눌러 자세히 보기</p>
       <div id="roster-scroll" tabindex="0" role="region" aria-label="획득한 동료 목록. 세로 스크롤 가능"><div id="roster-grid" role="list" aria-label="획득한 캐릭터"></div></div>
       <div class="recruit-note"><span aria-hidden="true">✧</span><div><strong id="next-companion-title">다음 만남을 기다리며</strong><p id="next-companion-copy"></p><div class="meter recruit"><i id="recruit-progress"></i></div></div></div>
-      <p class="roster-footnote">획득한 동료만 보여요. 현재 동료 한 명과 모험하며,<br>성장과 유대감은 캐릭터마다 따로 저장돼요.</p>
+      <p class="roster-footnote">최대 6명의 동료와 동시에 함께할 수 있어요.<br>화면의 동료를 선택하면 그 동료를 돌보고 지시해요.</p>
     </div>
     <div id="tab-inventory" class="tab-content" hidden>
       <div class="tab-intro inventory-heading"><div><h3>모험에서 모은 보물</h3><p>몬스터가 남긴 아이템을 차곡차곡 모아요.</p></div><span class="inventory-symbol" aria-hidden="true">◇</span></div>

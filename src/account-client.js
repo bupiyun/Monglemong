@@ -320,10 +320,39 @@ export function createAccountClient({
 
   function presenceBody(presence) {
     const value = typeof presence === 'function' ? presence() : presence || {};
-    return { ...(Number.isFinite(value.width) ? { width: value.width } : {}),
-      ...(Number.isFinite(value.x) ? { x: value.x } : {}),
+    const invalid = () => { throw new ServiceError('화면과 동료 위치 정보를 확인해 주세요.', { code: 'INVALID_PRESENCE' }); };
+    const number = (input, low = 0, high = 65536) => {
+      if (typeof input !== 'number' || !Number.isFinite(input) || input < low || input > high) invalid();
+      return input;
+    };
+    const id = input => {
+      if (typeof input !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(input)) invalid();
+      return input;
+    };
+    const body = { ...(value.width === undefined ? {} : { width: number(value.width, 320) }),
+      ...(value.x === undefined ? {} : { x: number(value.x) }),
       ...(typeof value.elevated === 'boolean' ? { elevated: value.elevated } : {}),
       ...(typeof value.paused === 'boolean' ? { paused: value.paused } : {}) };
+    if (value.displays !== undefined) {
+      if (!Array.isArray(value.displays) || !value.displays.length || value.displays.length > 32) invalid();
+      body.displays = value.displays.map(display => {
+        if (!display || typeof display !== 'object') invalid();
+        return { id: id(display.id), x: number(display.x), y: number(display.y), width: number(display.width, 1),
+          height: number(display.height, 1), floorY: number(display.floorY) };
+      });
+    }
+    if (value.characters !== undefined) {
+      if (!Array.isArray(value.characters) || value.characters.length > 6) invalid();
+      body.characters = value.characters.map(character => {
+        if (!character || typeof character !== 'object') invalid();
+        return { characterId: id(character.characterId),
+          ...(character.x === undefined ? {} : { x: number(character.x) }),
+          ...(character.displayId === undefined ? {} : { displayId: id(character.displayId) }),
+          ...(typeof character.elevated === 'boolean' ? { elevated: character.elevated } : {}),
+          ...(typeof character.paused === 'boolean' ? { paused: character.paused } : {}) };
+      });
+    }
+    return body;
   }
   function acceptGame(result) {
     if (!result || !Number.isSafeInteger(result.revision) || result.revision < 0 || !result.game || typeof result.game !== 'object') {
@@ -344,7 +373,18 @@ export function createAccountClient({
     // avoids filling the command queue with obsolete presence updates.
     if (syncTask?.epoch === epoch) return syncTask.promise;
     const expected = epoch;
-    const task = queueGame(async current => acceptGame(await transport('POST', '/v1/game/sync', presenceBody(presence), { expected: current })));
+    const task = queueGame(async current => {
+      try { return acceptGame(await transport('POST', '/v1/game/sync', presenceBody(presence), { expected: current })); }
+      catch (error) {
+        // Another signed-in device may have recalled a companion included in
+        // this presence snapshot. Let the UI adopt the canonical roster and
+        // retry its remaining placements without reviving the recalled actor.
+        if (error.status === 409 && error.data?.game && Number.isSafeInteger(error.data.revision) && error.data.revision >= 0) {
+          revision = error.data.revision; emit();
+        }
+        throw error;
+      }
+    });
     const promise = task.finally(() => { if (syncTask?.promise === promise) syncTask = null; });
     syncTask = { epoch: expected, promise };
     return promise;

@@ -93,6 +93,6 @@ npm.cmd run check:public -- --worktree
 
 ## 소스와 설치 파일
 
-유저용 소스는 `build-windows.cmd`로 Windows 설치 파일을 만들 수 있습니다. 결과물은 `release/user/MongleMong-Setup-0.9.2-x64.exe`입니다. 자세한 순서는 [EXE 제작 안내](../EXE-만드는법.txt), 게임 기능은 [README](../README.md)를 참고하세요.
+유저용 소스는 `build-windows.cmd`로 Windows 설치 파일을 만들 수 있습니다. 결과물은 `release/user/MongleMong-Setup-0.10.0-x64.exe`입니다. 자세한 순서는 [EXE 제작 안내](../EXE-만드는법.txt), 게임 기능은 [README](../README.md)를 참고하세요.
 
 관리자용 소스와 설치 파일은 공개 전달 대상에 포함하지 않습니다. 이번 작업은 소스·작업 흐름을 정리하며 EXE를 직접 만들거나 자동 배포하지 않습니다.

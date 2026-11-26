@@ -20,7 +20,7 @@
 @media(max-width:760px){:root{--floor:77px}#topbar{left:20px;right:20px;top:14px}.brand{font-size:19px}.brand small{font-size:7px}.brand-mark{font-size:35px;width:35px}.top-actions{gap:6px}.version-tag,.divider{display:none}.companion-card{top:90px;left:18px;width:210px;padding:14px}.companion-title{margin:15px 0}.portrait{width:48px;height:48px}.portrait img{width:48px;height:48px}.companion-title p{font-size:9px}.name-line h2{font-size:18px}.name-line{gap:6px}.bond-label{font-size:9px}.field-note{display:none}.place-label{left:auto;right:25px;top:135px;transform:none}.place-label>span{font-size:8px;letter-spacing:2px}.place-label h1{font-size:15px}.place-label p{font-size:9px}.dock{top:90px;right:18px;width:min(330px,calc(100vw - 36px))}.dock:not([hidden])~#bottom-bar .world-status{max-width:190px}.tab-content{max-height:calc(100vh - 330px)}#bottom-bar{left:18px;right:18px;bottom:18px}.world-status{font-size:9px;padding:9px;max-width:205px}.launcher{gap:9px;padding:0 11px;font-size:11px}.world-status span:last-child{white-space:nowrap;text-overflow:ellipsis;overflow:hidden}#placement-banner{width:calc(100vw - 35px);justify-content:space-between;gap:7px;top:13px;font-size:10px}.needs{font-size:9px}#toast{bottom:140px;font-size:11px}.character-menu{width:170px}}
 
 /* Shared settings and sprite presentation also used by the user build. */
-.character.custom-character #character-sprite{animation:none;transform:none}
+.character.custom-character .character-sprite{animation:none;transform:none}
 #world{overflow:clip}
 .roster-card strong{max-width:100%;overflow-wrap:anywhere}
 .companion-title>div,.profile-hero>div{min-width:0}
@@ -41,3 +41,23 @@ dialog.settings-dialog{overflow:hidden;max-height:88vh}
 .online-mode .character.cloud-floor:not(.dragging){transition:left .24s linear}
 .online-mode .monster{transition:left .24s linear}
 .online-mode.reduced-motion .character,.online-mode.reduced-motion .monster{transition:none}
+
+/* Chrome belongs to the primary monitor; the world still spans every display. */
+.desktop-layout #topbar{left:calc(var(--primary-x) + 40px);right:calc(var(--primary-right) + 40px);top:calc(var(--primary-y) + 27px)}
+.desktop-layout .companion-card{left:calc(var(--primary-x) + 40px);top:calc(var(--primary-y) + 132px);max-height:calc(var(--primary-height) - 220px);overflow-y:auto;width:290px;scrollbar-width:thin}
+.desktop-layout .dock{right:calc(var(--primary-right) + 40px);top:calc(var(--primary-y) + 132px);width:min(348px,calc(var(--primary-width) - 36px));max-height:calc(var(--primary-height) - 215px)}
+.desktop-layout .tab-content{max-height:calc(var(--primary-height) - 386px)}
+.desktop-layout #bottom-bar{left:calc(var(--primary-x) + 40px);right:calc(var(--primary-right) + 40px);bottom:calc(var(--primary-bottom) + 18px)}
+.desktop-layout .place-label{left:var(--primary-center);top:calc(var(--primary-y) + var(--primary-height) * .2);right:auto;transform:translateX(-50%)}
+.desktop-layout .field-note{left:calc(var(--primary-x) + 48px);top:calc(var(--primary-y) + 570px)}
+.desktop-layout #toast{left:var(--primary-center);bottom:calc(var(--primary-bottom) + 155px);max-width:calc(var(--primary-width) - 32px)}
+.desktop-layout #placement-banner{left:var(--primary-center);top:calc(var(--primary-y) + 28px);max-width:calc(var(--primary-width) - 32px)}
+.desktop-layout dialog{position:fixed;inset:auto;left:var(--primary-center);top:var(--primary-middle);transform:translate(-50%,-50%);margin:0;max-width:calc(var(--primary-width) - 32px);max-height:calc(var(--primary-height) - 48px)}
+.desktop-layout dialog.settings-dialog .settings-panel{max-height:calc(var(--primary-height) - 205px)}
+.desktop-layout #pause-overlay{left:var(--primary-x);top:var(--primary-y);width:var(--primary-width);height:var(--primary-height);right:auto;bottom:auto}
+.desktop-layout.compact-primary .companion-card{width:246px;left:calc(var(--primary-x) + 25px)}
+.desktop-layout.compact-primary .dock{right:calc(var(--primary-right) + 25px);width:min(315px,calc(var(--primary-width) - 36px))}
+.desktop-layout.compact-primary .bottom-tip{display:none}
+.desktop-layout.short-primary .dock,.desktop-layout.short-primary .companion-card{top:calc(var(--primary-y) + 100px);max-height:calc(var(--primary-height) - 182px)}
+.desktop-layout.short-primary .tab-content{max-height:calc(var(--primary-height) - 325px)}
+.desktop-layout.short-primary .field-note{display:none}

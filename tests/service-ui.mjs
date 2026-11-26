@@ -50,6 +50,16 @@ async function openPage({ role = 'user', configured = true } = {}) {
     const error = (status, code, message) => ({ status, body: { error: { code, message } }, contentType: 'application/json' });
     const envelope = () => ({ game: structuredClone(mock.game), revision: mock.revision,
       newCharacters: [], serverTime: Date.now() });
+    const applyPresence = body => {
+      if (Array.isArray(body.displays)) mock.game.worldDisplays = structuredClone(body.displays);
+      for (const presence of body.characters || []) {
+        const character = mock.game.characters.find(item => item.id === presence.characterId);
+        if (!character || !mock.game.deployedCharacterIds.includes(character.id)) continue;
+        if (Number.isFinite(presence.x)) character.x = presence.x;
+        if (presence.displayId) character.displayId = presence.displayId;
+      }
+      mock.game.character = structuredClone(mock.game.characters.find(item => item.id === mock.game.activeCharacterId));
+    };
     window.desktop = {
       isDesktop: true,
       setInteractiveRegions: regions => { mock.regions = regions; },
@@ -71,16 +81,33 @@ async function openPage({ role = 'user', configured = true } = {}) {
           return ok({ ok: true });
         }
         if (path === '/v1/game/sync') {
-          if (Number.isFinite(body.x)) {
-            mock.game.character.x = body.x;
-            mock.game.characters.find(item => item.id === mock.game.activeCharacterId).x = body.x;
+          if (mock.holdPausedSync && body.characters?.some(character => character.paused)) {
+            mock.holdPausedSync = false;
+            await new Promise(resolveSync => { mock.releaseHeldSync = resolveSync; });
+            mock.releaseHeldSync = null;
           }
+          applyPresence(body);
           return ok(envelope());
         }
         if (path === '/v1/game/action') {
           if (body.revision !== mock.revision) return { ...error(409, 'REVISION_CONFLICT', '저장이 변경되었어요.'), body: { error: { code: 'REVISION_CONFLICT', message: '저장이 변경되었어요.' }, ...envelope() } };
+          applyPresence(body);
           if (body.type === 'setCharacterScale') mock.game.settings.characterScale = body.payload.scale;
           if (body.type === 'setWindowWalking') mock.game.settings.windowWalking = body.payload.enabled;
+          if (body.type === 'command') {
+            const character = mock.game.characters.find(item => item.id === body.payload.characterId);
+            if (!character) return error(400, 'INVALID_CHARACTER', '대상 동료가 필요해요.');
+            character.command = body.payload.command;
+            mock.game.character = structuredClone(mock.game.characters.find(item => item.id === mock.game.activeCharacterId));
+          }
+          const placement = body.characters?.find(character => Number.isFinite(character.x));
+          if (placement && mock.nextPlacementOffset) {
+            const character = mock.game.characters.find(item => item.id === placement.characterId);
+            character.x += mock.nextPlacementOffset;
+            mock.placementAck = { input: placement.x, output: character.x, requestIndex: mock.requests.length - 1 };
+            mock.nextPlacementOffset = 0;
+            mock.game.character = structuredClone(mock.game.characters.find(item => item.id === mock.game.activeCharacterId));
+          }
           mock.revision += 1;
           return ok({ ...envelope(), result: { ok: true, message: '설정을 저장했어요.' } });
         }
@@ -145,6 +172,49 @@ try {
   const auth = await page.evaluate(() => window.__service.requests.filter(item => item.path.startsWith('/v1/auth/')));
   assert.match(auth.find(item => item.path.endsWith('/start')).body.challenge, /^[A-Za-z0-9_-]{43}$/);
   assert.match(auth.find(item => item.path.endsWith('/poll')).body.verifier, /^[A-Za-z0-9_-]{43}$/);
+  await page.locator('#close-modal').click();
+  await page.locator('[data-command="fight"]').click();
+  await expect.poll(() => page.evaluate(() => window.__service.game.character.command)).toBe('fight');
+  const targetedCommand = await page.evaluate(() => window.__service.requests.find(item => item.path === '/v1/game/action' && item.body.type === 'command'));
+  assert.deepEqual(targetedCommand.body.payload, { characterId: 'cafemong', command: 'fight' }, 'Online commands identify the intended owned companion');
+  await page.locator('[data-command="rest"]').click();
+  await expect.poll(() => page.evaluate(() => window.__service.game.character.command)).toBe('rest');
+  // Hold the first drag heartbeat so a command queues behind it. Releasing
+  // the pointer then supplies the explicit placement to that queued action.
+  // The server advances the result by 40px; a stale pending x would rewind it.
+  await page.evaluate(() => { window.__service.holdPausedSync = true; window.__service.nextPlacementOffset = 40; });
+  const onlineBeforeDrag = await page.locator('#character').boundingBox();
+  await page.mouse.move(onlineBeforeDrag.x + onlineBeforeDrag.width / 2, onlineBeforeDrag.y + onlineBeforeDrag.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(760, 650, { steps: 12 });
+  await expect.poll(() => page.evaluate(() => typeof window.__service.releaseHeldSync)).toBe('function');
+  const heldPresence = await page.evaluate(() => window.__service.requests.find(item => item.path === '/v1/game/sync'
+    && item.body.characters?.some(character => character.characterId === 'cafemong' && character.paused)));
+  assert.ok(heldPresence, 'The server receives a paused heartbeat while the pointer is still held');
+  // Dispatch a genuine command button handler without moving the captured mouse.
+  await page.evaluate(() => document.querySelector('[data-command="rest"]').click());
+  await page.mouse.up();
+  await page.evaluate(() => window.__service.releaseHeldSync());
+  await expect.poll(() => page.evaluate(() => window.__service.placementAck?.input || 0)).toBeGreaterThan(700);
+  const ack = await page.evaluate(() => window.__service.placementAck);
+  const placementAction = await page.evaluate(index => window.__service.requests[index], ack.requestIndex);
+  assert.equal(placementAction.path, '/v1/game/action');
+  assert.equal(placementAction.body.type, 'command');
+  assert.ok(placementAction.body.displays.length >= 1, 'Online placement includes display regions');
+  assert.equal(placementAction.body.characters[0].displayId, 'primary');
+  assert.equal(placementAction.body.characters[0].paused, false, 'Release resumes the target companion');
+  assert.equal(typeof placementAction.body.characters[0].elevated, 'boolean');
+  assert.ok(!('game' in placementAction.body), 'Placement actions do not submit a client game save');
+  await expect.poll(() => page.evaluate(index => window.__service.requests.slice(index + 1)
+    .filter(item => item.path === '/v1/game/sync').length, ack.requestIndex)).toBeGreaterThan(0);
+  const afterAck = await page.evaluate(index => window.__service.requests.slice(index + 1)
+    .filter(item => item.path === '/v1/game/sync'), ack.requestIndex);
+  for (const sync of afterAck) assert.ok(sync.body.characters.every(character => !('x' in character)), 'Acknowledged action placement is not submitted again by sync');
+  assert.equal(await page.evaluate(() => window.__service.game.character.x), ack.output, 'Later sync cannot rewind the server position to the released drag x');
+  await expect.poll(() => page.locator('#character').evaluate(node => {
+    const box = node.getBoundingClientRect(); return box.x + box.width / 2;
+  })).toBe(ack.output);
+  assert.equal((await guestSave(page)).gold, 120, 'Online movement leaves the guest game intact');
   await openSettings(page, 'general');
   await page.locator('[data-character-scale="3"]').click();
   await expect(page.locator('[data-character-scale="3"]')).toHaveAttribute('aria-pressed', 'true');
@@ -161,7 +231,7 @@ try {
   await expect(page.locator('#gold-text')).toHaveText('120');
   assert.equal(await page.evaluate(() => window.__service.token), null);
   assert.equal((await guestSave(page)).settings.characterScale, 2);
-  console.log('✓ User flavor omits admin UI/module; login isolates guest/cloud saves, settings use server actions, logout restores guest, and dragging works');
+  console.log('✓ User flavor omits admin UI/module; login isolates guest/cloud saves, settings/targeted commands/placements use server actions, logout restores guest, and dragging works');
 
   await login(page);
   await page.evaluate(() => { window.__service.expired = true; });

@@ -45,3 +45,10 @@ dialog.companion-dialog{width:465px;padding:24px}
 @media(max-height:800px){.field-note{top:536px}.companion-card .companion-title{margin-bottom:17px}.companion-card .needs{margin-top:13px;margin-bottom:14px}.companion-card .profile-link{padding-top:10px}#roster-scroll{height:220px;min-height:220px}}
 @media(max-width:760px){.tabs{gap:7px}.tabs button{font-size:12px}.profile-link{font-size:10px}#roster-scroll{height:246px;min-height:246px}.roster-card{min-height:117px}dialog.companion-dialog{padding:19px}.profile-hero{padding-bottom:15px}.profile-traits{padding:12px;margin-bottom:16px}.profile-traits dd{font-size:12px}.profile-hero h3{font-size:22px}.companion-title #active-title{font-size:9px}}
 @media(max-height:660px){.field-note{display:none}.companion-card{max-height:calc(100vh - 195px);overflow-y:auto;scrollbar-width:thin}}
+
+.roster-entry{min-width:0}
+.roster-deploy{display:block;width:100%;padding:8px 2px;margin-top:4px;border:1px solid #dce4d6;border-radius:6px;background:#f3f6ee;color:#688257;font-size:10px;touch-action:pan-y}
+.roster-deploy[data-deployed="true"]{background:#f7f3f6;border-color:#e9e2eb;color:#99849e}
+#deployed-count{color:#658154;font-weight:600;white-space:nowrap}
+#toggle-companion-deployment{margin-top:9px}
+.character.is-focused .character-name{border-color:#9cb78b;box-shadow:0 0 0 1px #b2c8a577}

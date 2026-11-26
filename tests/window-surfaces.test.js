@@ -99,6 +99,61 @@ test('auto-hidden taskbar geometry identifies the floor without lowering it', ()
   assert.deepEqual(value.surfaces[0], { id: 'desktop-floor', kind: 'taskbar', x: 0, y: 700, width: 1000 });
 });
 
+const multiGeometry = {
+  bounds: { x: -800, y: -500, width: 2000, height: 1300 },
+  displays: [
+    { id: 'primary', bounds: { x: 0, y: 0, width: 1200, height: 800 }, workArea: { x: 0, y: 0, width: 1200, height: 760 } },
+    { id: 'left', bounds: { x: -800, y: 0, width: 800, height: 600 }, workArea: { x: -780, y: 0, width: 780, height: 600 } },
+    { id: 'upper', bounds: { x: 0, y: -500, width: 1200, height: 500 }, workArea: { x: 0, y: -500, width: 1200, height: 460 } },
+  ],
+};
+
+test('each monitor has its own work-area floor, including negative origins and side taskbars', () => {
+  const value = buildSurfaceSnapshot(null, multiGeometry, true);
+  assert.deepEqual(value.surfaces, [
+    { id: 'desktop-floor:primary', displayId: 'primary', kind: 'taskbar', x: 800, y: 1260, width: 1200 },
+    { id: 'desktop-floor:left', displayId: 'left', kind: 'floor', x: 20, y: 1100, width: 780 },
+    { id: 'desktop-floor:upper', displayId: 'upper', kind: 'taskbar', x: 800, y: 460, width: 1200 },
+  ]);
+});
+
+test('spanning frame edges are clipped per monitor without crossing gaps or inventing top edges', () => {
+  const value = buildSurfaceSnapshot({ windows: [rect('wide', -1000, -300, 2400, 1000)] }, multiGeometry, true, 'ready');
+  assert.deepEqual(value.surfaces.filter(surface => surface.kind === 'window'), [
+    { id: 'window:wide:upper:0', displayId: 'upper', kind: 'window', x: 800, y: 200, width: 1200,
+      windowId: 'window:wide', anchorX: -200, windowWidth: 2400 },
+  ], 'window top in upper monitor cannot create another top on the lower monitors');
+  const split = buildSurfaceSnapshot({ windows: [rect('wide', -1000, 200, 2400, 500), rect('front', -100, 100, 200, 300, -1)] }, multiGeometry, true, 'ready');
+  assert.deepEqual(split.surfaces.filter(surface => surface.windowId === 'window:wide').map(({ displayId, x, y, width }) => ({ displayId, x, y, width })), [
+    { displayId: 'primary', x: 900, y: 700, width: 1100 },
+    { displayId: 'left', x: 20, y: 700, width: 680 },
+  ]);
+});
+
+test('mixed-DPI windows convert each physical display portion before restoring window anchors', () => {
+  const calls = [];
+  const value = buildSurfaceSnapshot({ windows: [rect('spanning', -400, 200, 800, 400)] }, {
+    bounds: { x: -800, y: 0, width: 1800, height: 800 },
+    displays: [
+      { id: 'left', bounds: { x: -800, y: 0, width: 800, height: 600 }, workArea: { x: -800, y: 0, width: 800, height: 580 }, scaleFactor: 2 },
+      { id: 'right', bounds: { x: 0, y: 0, width: 1000, height: 800 }, workArea: { x: 0, y: 0, width: 1000, height: 760 }, scaleFactor: 1 },
+    ],
+    dipToScreenRect: source => Object.fromEntries(Object.entries(source).map(([key, value]) => [key, value * (source.x < 0 ? 2 : 1)])),
+    screenToDipRect(source) {
+      calls.push(source);
+      const scale = source.x < 0 ? 2 : 1;
+      return Object.fromEntries(Object.entries(source).map(([key, value]) => [key, value / scale]));
+    },
+  }, true, 'ready');
+  assert.deepEqual(value.surfaces.filter(surface => surface.kind === 'window'), [
+    { id: 'window:spanning:left:0', displayId: 'left', kind: 'window', x: 600, y: 100, width: 200,
+      windowId: 'window:spanning', anchorX: 600, windowWidth: 400 },
+    { id: 'window:spanning:right:0', displayId: 'right', kind: 'window', x: 800, y: 200, width: 400,
+      windowId: 'window:spanning', anchorX: 400, windowWidth: 800 },
+  ]);
+  assert.deepEqual(calls, [{ x: -400, y: 200, width: 400, height: 400 }, { x: 0, y: 200, width: 400, height: 400 }]);
+});
+
 function harness(overrides = {}) {
   let now = 0;
   let nextTimer = 0;

@@ -1,4 +1,4 @@
-import { CORE_TYPES, CHARACTER_TYPES, FOOD_GROUPS, TASTES, FOODS, ITEM_TYPES, MONSTER_DROPS, createGame, stepGame, petCharacter, feedCharacter, setCommand, deployCore, buyCore, claimDaily, serializeGame, selectCharacter, getNextCompanion, setCharacterScale, setWindowWalking, getCharacterBounds } from './engine.js';
+import { CORE_TYPES, CHARACTER_TYPES, FOOD_GROUPS, TASTES, FOODS, ITEM_TYPES, MONSTER_DROPS, createGame, stepGame, petCharacter, feedCharacter, setCommand, deployCore, buyCore, claimDaily, serializeGame, selectCharacter, getNextCompanion, setCharacterScale, setWindowWalking, MAX_DEPLOYED_COMPANIONS, getDeployedCharacters, setCharacterDeployed, moveCharacter } from './engine.js';
 import { RUNTIME_CONFIG } from './runtime-config.js';
 import { createAccountClient } from './account-client.js';
 import { mountAccountPanel } from './account-ui.js';
@@ -6,6 +6,7 @@ import { applyCharacterSprite, setSpriteSheet, preloadBundledSprites, getCharact
 import { getSpriteSheet, deleteSpriteSheet } from './sprite-storage.js';
 import { createWarehouseUI } from './warehouse.js';
 import { createSurfaceWalker } from './desktop-surfaces.js';
+import { readDesktopLayout, displayForPoint, clampCharacterPoint } from './desktop-layout.js';
 
 const $ = id => document.getElementById(id);
 const SAVE_KEY = 'mori.game.v1';
@@ -34,16 +35,20 @@ let settingsGeneration = 0;
 let cloudActive = false;
 let cloudBlocked = false;
 let cloudBusy = false;
+let cloudSyncRequested = false;
 let cloudEpoch = 0;
 let lastCloudSync = 0;
-let pendingDragX = null;
+const pendingPlacements = new Map();
+let desktopLayout = null;
+let topologyReady = !desktop?.requestDisplays;
+let resolveTopology;
+const topologyLoaded = topologyReady ? Promise.resolve() : new Promise(resolve => { resolveTopology = resolve; });
 const loadingCloudSheets = new Set();
 const account = createAccountClient({ config: RUNTIME_CONFIG, desktop });
 const surfaceWalker = createSurfaceWalker();
 let surfaceSnapshot = { supported: false, status: 'unavailable', surfaces: [] };
-let surfacePose = null;
-let surfaceWalking = false;
-let surfaceWalkTime = 0;
+const surfacePoses = new Map();
+const surfaceAnimations = new Map();
 const sheetURLs = new Map();
 // Keep the old storage namespace so existing installations retain their saves.
 const SHEET_CLEANUP_KEY = 'mori.pendingSpriteDeletes.v1';
@@ -70,32 +75,72 @@ const floor = () => {
 };
 const characterScale = () => state.settings.characterScale;
 const characterSize = () => 96 * characterScale();
-const clampX = x => {
-  const { low, high } = getCharacterBounds(document.documentElement.clientWidth, characterScale());
-  return Math.max(low, Math.min(high, x));
-};
+const worldDisplays = () => desktopLayout?.displays || [{ id: 'primary', x: 0, y: 0,
+  width: document.documentElement.clientWidth, height: innerHeight, floorY: innerHeight }];
+const primaryDisplay = () => worldDisplays()[0];
+const displayFor = actor => worldDisplays().find(area => area.id === actor?.displayId) || primaryDisplay();
+const nativeFloor = () => Boolean(desktopLayout && !sceneMode);
 const surfaceMode = () => Boolean(desktop && !sceneMode && state.settings.windowWalking && surfaceSnapshot.supported);
-function surfaceOptions(extra = {}) {
-  return { characterId: state.character.id, x: state.character.x,
-    width: document.documentElement.clientWidth, height: innerHeight, size: characterSize(),
-    command: state.character.command, enabled: surfaceMode(),
-    paused: paused || cloudBlocked || document.hidden || !$('character-menu').hidden
-      || (state.character.animationState === 'pet' && state.character.animationTimer > 0),
-    speed: 32 * state.character.speed / 10, ...extra };
+function surfaceOptions(character, extra = {}) {
+  const area = displayFor(character);
+  return { characterId: character.id, displayId: desktopLayout ? area.id : undefined, x: character.x,
+    width: desktopLayout?.width || document.documentElement.clientWidth, height: desktopLayout?.height || innerHeight, size: characterSize(),
+    bounds: area, command: character.command, enabled: surfaceMode(),
+    paused: paused || cloudBlocked || document.hidden
+      || (!$('character-menu').hidden && character.id === state.activeCharacterId)
+      || (character.animationState === 'pet' && character.animationTimer > 0),
+    speed: 32 * character.speed / 10, ...extra };
 }
-function syncSurfacePose(dt = 0, advance = false) {
+function syncSurfacePose(character, dt = 0, advance = false) {
   const enabled = surfaceMode();
-  document.body.classList.toggle('surface-mode', enabled);
-  surfacePose = surfaceWalker.step(surfaceOptions({ dt,
-    ...(drag?.kind === 'character' && drag.surface ? { dragging: true, footY: drag.footY } : {}) }));
-  if (enabled) state.character.x = surfacePose.x;
-  if (!enabled || surfacePose.onFloor || !surfacePose.grounded || state.character.command !== 'wander' || drag?.kind === 'character') surfaceWalking = false;
+  const dragging = drag?.kind === 'character' && drag.characterId === character.id;
+  const pose = surfaceWalker.step(surfaceOptions(character, { dt,
+    ...(dragging && drag.surface ? { dragging: true, footY: drag.footY } : {}) }));
+  if (enabled && !dragging && topologyReady) character.x = pose.x;
+  const animation = surfaceAnimations.get(character.id) || { walking: false, time: 0 };
+  if (!enabled || pose.onFloor || !pose.grounded || character.command !== 'wander' || dragging) animation.walking = false;
   else if (advance && !paused && !document.hidden) {
-    surfaceWalking = surfacePose.action === 'walk';
-    if (surfaceWalking) surfaceWalkTime += dt;
+    animation.walking = pose.action === 'walk';
+    if (animation.walking) animation.time += dt;
   }
-  if (surfaceWalking) state.character.facing = surfacePose.facing;
-  return surfacePose;
+  if (animation.walking) character.facing = pose.facing;
+  surfaceAnimations.set(character.id, animation);
+  surfacePoses.set(character.id, pose);
+  return pose;
+}
+function normalizePlacement() {
+  if (topologyReady && !cloudActive) stepGame(state, 0, innerWidth, Math.random, { displays: worldDisplays() });
+}
+// Online topology changes only remap presentation coordinates. Server ticks own
+// simulation; keeping this local geometry current also makes repeated events safe.
+function remapVisualLayout(game) {
+  const displays = worldDisplays(), previous = game.worldDisplays || [];
+  for (const actor of [...game.characters, ...game.portals, ...game.monsters, ...game.effects]) {
+    const before = previous.find(area => area.id === actor.displayId);
+    const area = displays.find(item => item.id === actor.displayId) || displays[0];
+    const shift = before ? area.x - before.x : actor.displayId !== area.id ? area.x : 0;
+    const point = clampCharacterPoint(area, actor.x + shift, area.floorY, game.characters.includes(actor) ? 96 * game.settings.characterScale : game.effects.includes(actor) ? 0 : 76);
+    actor.x = point.x; actor.displayId = area.id;
+  }
+  game.worldDisplays = displays.map(({ id, x, y, width, height, floorY }) => ({ id, x, y, width, height, floorY }));
+}
+function positionPrimaryUI() {
+  if (!desktopLayout) return;
+  const area = primaryDisplay();
+  const style = document.body.style;
+  for (const [key, value] of Object.entries({ x: area.x, y: area.y, width: area.width, height: area.height,
+    right: innerWidth - area.x - area.width, bottom: innerHeight - area.y - area.height,
+    center: area.x + area.width / 2, middle: area.y + area.height / 2 })) style.setProperty('--primary-' + key, value + 'px');
+  document.body.classList.add('desktop-layout');
+  document.body.classList.toggle('compact-primary', area.width < 1050);
+  document.body.classList.toggle('short-primary', area.height < 800);
+  if (customDock) clampDock();
+}
+function clampDock(x, y) {
+  const area = primaryDisplay(), box = $('dock').getBoundingClientRect();
+  $('dock').style.left = Math.max(area.x + 8, Math.min(area.x + area.width - box.width - 8, x ?? box.x)) + 'px';
+  $('dock').style.top = Math.max(area.y + 8, Math.min(area.y + area.height - box.height - 70, y ?? box.y)) + 'px';
+  $('dock').style.right = 'auto';
 }
 function surfaceStatusText() {
   if (!surfaceSnapshot.supported) return 'Windows 앱의 바탕화면 모드에서 사용할 수 있어요';
@@ -149,17 +194,21 @@ function releaseSheetURL(id) {
   sheetURLs.delete(id);
 }
 function cloudPresence() {
-  const elevated = surfaceMode() && surfacePose && !surfacePose.onFloor;
-  return { width: Math.max(320, Math.min(7680, innerWidth)), elevated: Boolean(elevated),
-    paused: paused || document.hidden || drag?.kind === 'character',
-    ...(pendingDragX !== null ? { x: pendingDragX } : elevated ? { x: state.character.x } : {}) };
+  return { width: Math.max(320, Math.min(65536, innerWidth)), paused: paused || document.hidden,
+    displays: worldDisplays(), characters: getDeployedCharacters(state).map(character => {
+      const pose = surfacePoses.get(character.id);
+      const elevated = Boolean(surfaceMode() && pose && !pose.onFloor);
+      const placement = pendingPlacements.get(character.id);
+      return { characterId: character.id, displayId: character.displayId || displayFor(character).id,
+        elevated, paused: drag?.kind === 'character' && drag.characterId === character.id,
+        ...(placement ? { x: placement.x, displayId: placement.displayId } : elevated ? { x: character.x } : {}) };
+    }) };
 }
 function clearCompanionPlacement() {
   for (const character of state.characters) surfaceWalker.forget(character.id);
   for (const id of [...sheetURLs.keys()]) releaseSheetURL(id);
   loadingCloudSheets.clear();
-  surfacePose = null;
-  pendingDragX = null;
+  surfacePoses.clear(); surfaceAnimations.clear(); pendingPlacements.clear(); cloudSyncRequested = false;
 }
 async function loadCloudArtwork() {
   const epoch = cloudEpoch;
@@ -182,6 +231,12 @@ async function loadCloudArtwork() {
 function applyCloudGame(envelope) {
   if (!envelope?.game || !Array.isArray(envelope.game.characters)) throw new Error('서버의 게임 정보를 확인하지 못했어요.');
   const next = createGame(envelope.game);
+  const live = new Set(getDeployedCharacters(next).map(character => character.id));
+  for (const id of pendingPlacements.keys()) if (!live.has(id)) pendingPlacements.delete(id);
+  if (drag?.kind === 'character' && !live.has(drag.characterId)) {
+    try { drag.target.releasePointerCapture(drag.pointerId); } catch {}
+    drag = null;
+  }
   // Only the configured authenticated server supplies these visual runtime fields.
   for (const character of next.characters) {
     const runtime = envelope.game.characters.find(item => item.id === character.id);
@@ -190,8 +245,14 @@ function applyCloudGame(envelope) {
       if (runtime[key] !== undefined) character[key] = runtime[key];
     }
   }
-  next.effects = Array.isArray(envelope.game.effects) ? envelope.game.effects : [];
-  if (drag?.kind === 'character' && next.character.id === state.character.id) next.character.x = state.character.x;
+  next.effects = Array.isArray(envelope.game.effects) ? envelope.game.effects.map(effect => ({ ...effect })) : [];
+  if (topologyReady) remapVisualLayout(next);
+  for (const character of next.characters) {
+    const local = state.characters.find(item => item.id === character.id);
+    if (local && ((drag?.kind === 'character' && drag.characterId === character.id) || pendingPlacements.has(character.id))) {
+      character.x = local.x; character.displayId = local.displayId;
+    }
+  }
   state = next;
   cloudBlocked = false;
   lastCloudSync = performance.now();
@@ -201,28 +262,39 @@ function applyCloudGame(envelope) {
   if (envelope.newCharacters?.length) notify(envelope.newCharacters.map(item => item.name).join(', ') + ' 동료가 새로 합류했어요!');
 }
 async function syncCloudGame() {
-  if (!cloudActive || cloudBusy || !account.user) return;
+  if (!cloudActive || !account.user) return;
+  if (cloudBusy) { cloudSyncRequested = true; return; }
   const epoch = cloudEpoch;
-  const sentX = pendingDragX;
+  let sentPlacements;
   cloudBusy = true;
   try {
-    const response = await account.syncGame(cloudPresence);
+    const response = await account.syncGame(() => { sentPlacements = new Map(pendingPlacements); return cloudPresence(); });
     if (epoch !== cloudEpoch || !cloudActive) return;
-    if (pendingDragX === sentX) pendingDragX = null;
+    for (const [id, placement] of sentPlacements || []) if (pendingPlacements.get(id) === placement) pendingPlacements.delete(id);
     applyCloudGame(response);
   } catch (cause) {
     if (epoch !== cloudEpoch) return;
+    if (cause.status === 409 && cause.data?.game) {
+      applyCloudGame(cause.data);
+      return;
+    }
     cloudBlocked = true; lastCloudSync = performance.now(); save();
     if (!account.user) { await restoreGuestGame(); notify('로그인이 만료되어 이 기기의 모험으로 돌아왔어요. 계정 기록은 서버에 보관돼요.'); }
-  } finally { if (epoch === cloudEpoch) cloudBusy = false; }
+  } finally {
+    if (epoch === cloudEpoch) {
+      cloudBusy = false;
+      if (cloudSyncRequested) { cloudSyncRequested = false; lastCloudSync = 0; }
+    }
+  }
 }
 async function activateCloudGame() {
+  await topologyLoaded;
   if (!account.user) return;
   if (!cloudActive && !save()) throw new Error('기기의 모험을 보관하지 못했어요. 저장 공간을 확인해 주세요.');
   const epoch = ++cloudEpoch;
   cloudBusy = true;
   try {
-    const response = await account.syncGame({ width: Math.max(320, Math.min(7680, innerWidth)), paused, elevated: false });
+    const response = await account.syncGame({ width: Math.max(320, Math.min(65536, innerWidth)), displays: worldDisplays(), paused, elevated: false });
     if (epoch !== cloudEpoch || !account.user) return;
     // Preserve guest actions taken while the first online response was in flight.
     if (!cloudActive && !save()) throw new Error('기기의 모험을 보관하지 못했어요. 저장 공간을 확인해 주세요.');
@@ -236,7 +308,7 @@ async function restoreGuestGame() {
   document.body.classList.remove('online-mode');
   clearCompanionPlacement();
   let guest; try { guest = localStorage.getItem(SAVE_KEY); } catch {}
-  state = createGame(guest); lastInventory = ''; lastRoster = ''; lastLogs = '';
+  state = createGame(guest); normalizePlacement(); lastInventory = ''; lastRoster = ''; lastLogs = '';
   if ($('modal').open) $('modal').close();
   renderUI(); renderWorld(); reportRegions(); save();
   await restoreSpriteSheets();
@@ -286,8 +358,10 @@ async function perform(action, type, payload = {}) {
     const epoch = cloudEpoch;
     try {
       if (!type) throw new Error('이 작업은 계정 모험에서 사용할 수 없어요.');
-      const response = await account.gameAction(type, payload, cloudPresence);
+      let sentPlacements;
+      const response = await account.gameAction(type, payload, () => { sentPlacements = new Map(pendingPlacements); return cloudPresence(); });
       if (epoch !== cloudEpoch || !cloudActive) return;
+      for (const [id, placement] of sentPlacements || []) if (pendingPlacements.get(id) === placement) pendingPlacements.delete(id);
       applyCloudGame(response); result = response.result;
     } catch (cause) {
       if (epoch !== cloudEpoch) return;
@@ -299,7 +373,7 @@ async function perform(action, type, payload = {}) {
     }
   } else result = action();
   notify(result.message);
-  renderUI(); renderWorld(); save();
+  renderWorld(); renderUI(); save();
   return result;
 }
 function setScene(value) {
@@ -307,7 +381,7 @@ function setScene(value) {
   document.body.classList.toggle('overlay-mode', !value);
   desktop?.setSceneMode(value);
   $('scene-toggle').title = value ? '바탕화면 모드로 전환' : '초원 모드로 전환';
-  renderWorld();
+  positionPrimaryUI(); renderWorld();
   if ($('window-walking-status')) $('window-walking-status').textContent = surfaceStatusText();
   reportRegions();
 }
@@ -346,19 +420,19 @@ function renderUI() {
   const c = state.character;
   $('active-name').textContent = c.name;
   document.querySelector('.place-label h1').textContent = `${c.name}의 작은 초원`;
-  $('world').setAttribute('aria-label', `${c.name}의 모험 공간`);
+  $('world').setAttribute('aria-label', `동료 ${getDeployedCharacters(state).length}명이 함께하는 모험 공간`);
   $('active-title').textContent = c.title;
   applyCharacterSprite($('active-portrait'), c, { animation: 'idle', still: true });
   $('active-portrait').alt = c.name;
-  $('world-name').textContent = c.name;
+  if ($('world-name')) $('world-name').textContent = c.name;
   $('character-menu-title').textContent = `${withName(c.name)} 함께`;
   applyCharacterSprite($('care-portrait'), c, { animation: 'sleep', still: true });
   $('care-portrait').alt = `쉬고 있는 ${c.name}`;
   $('care-caption').textContent = `${c.name}는 당신 곁이 좋아요.`;
-  $('character').setAttribute('aria-label', `${c.name}와 상호작용. 드래그하여 이동할 수 있습니다.`);
+  $('character')?.setAttribute('aria-label', `${c.name}와 상호작용. 드래그하여 이동할 수 있습니다.`);
   document.querySelector('.command-switch').setAttribute('aria-label', `${c.name} 행동`);
   $('level-badge').textContent = 'Lv. ' + c.level;
-  $('world-level').textContent = 'Lv.' + c.level;
+  if ($('world-level')) $('world-level').textContent = 'Lv.' + c.level;
   $('hp-text').textContent = `${Math.ceil(c.hp)} / ${c.maxHp}`;
   $('hp-bar').style.width = (c.hp / c.maxHp * 100) + '%';
   $('mana-text').textContent = `${Math.floor(c.mana)} / ${c.maxMana}`;
@@ -400,10 +474,12 @@ function renderUI() {
 function renderRoster() {
   $('companion-count').textContent = state.characters.length;
   $('roster-count').textContent = `${state.characters.length} / ${CHARACTER_TYPES.length + (state.customDefinitions?.length || 0)}`;
-  const key = state.characters.map(c => `${c.id}:${c.level}`).join(',') + state.activeCharacterId;
+  const deployed = new Set(getDeployedCharacters(state).map(c => c.id));
+  $('deployed-count').textContent = `${deployed.size} / ${MAX_DEPLOYED_COMPANIONS}`;
+  const key = state.characters.map(c => `${c.id}:${c.level}`).join(',') + state.activeCharacterId + [...deployed].join(',');
   if (key !== lastRoster) {
     lastRoster = key;
-    $('roster-grid').innerHTML = state.characters.map(c => `<div role="listitem"><button class="roster-card ${c.id === state.activeCharacterId ? 'is-active' : ''}" data-companion="${c.id}" aria-label="${escape(c.name)}, 레벨 ${c.level}${c.id === state.activeCharacterId ? ', 현재 동료' : ''}, 상세 보기"><img src="${c.sprite}" alt=""><strong>${escape(c.name)}</strong><small>Lv. ${c.level}</small>${c.id === state.activeCharacterId ? '<span class="roster-active-mark" aria-hidden="true">✓</span>' : ''}</button></div>`).join('');
+    $('roster-grid').innerHTML = state.characters.map(c => `<div role="listitem" class="roster-entry"><button class="roster-card ${c.id === state.activeCharacterId ? 'is-active' : ''}" data-companion="${escape(c.id)}" aria-label="${escape(c.name)}, 레벨 ${c.level}${deployed.has(c.id) ? ', 화면에 함께하는 동료' : ''}, 상세 보기"><img src="${c.sprite}" alt=""><strong>${escape(c.name)}</strong><small>Lv. ${c.level} · ${deployed.has(c.id) ? '함께하는 중' : '대기 중'}</small>${c.id === state.activeCharacterId ? '<span class="roster-active-mark" aria-hidden="true">✓</span>' : ''}</button><button class="roster-deploy" data-deploy-character="${escape(c.id)}" data-deployed="${deployed.has(c.id)}" ${deployed.has(c.id) ? deployed.size === 1 ? 'disabled' : '' : deployed.size >= MAX_DEPLOYED_COMPANIONS ? 'disabled' : ''} aria-label="${escape(c.name)} ${deployed.has(c.id) ? '보관하기' : '화면에 꺼내기'}">${deployed.has(c.id) ? '보관하기' : '화면에 꺼내기'}</button></div>`).join('');
   }
   for (const card of $('roster-grid').querySelectorAll('[data-companion]')) {
     const companion = state.characters.find(c => c.id === card.dataset.companion);
@@ -411,7 +487,7 @@ function renderRoster() {
   }
   const next = getNextCompanion(state);
   $('next-companion-title').textContent = next ? `다음 동료 · ${next.name}` : '기본 동료 · 카페몽';
-  $('next-companion-copy').textContent = next ? `던전 ${next.unlockClears}회 완료하면 합류해요. 현재 ${state.stats.clears}회 완료` : '새 동료는 설정 → 관리자에서 직접 추가할 수 있어요.';
+  $('next-companion-copy').textContent = next ? `던전 ${next.unlockClears}회 완료하면 합류해요. 현재 ${state.stats.clears}회 완료` : '새 동료를 만나면 이곳에서 함께할 동료를 골라 보세요.';
   $('recruit-progress').parentElement.hidden = !next;
   $('recruit-progress').style.width = (next ? Math.min(100, state.stats.clears / next.unlockClears * 100) : 100) + '%';
 }
@@ -425,13 +501,14 @@ function renderFoodPreview() {
 function openCompanionDetail(id) {
   const c = state.characters.find(character => character.id === id);
   if (!c) return;
-  openModal('동료 이야기', `<section id="companion-detail" aria-label="캐릭터 상세 정보"><div class="profile-hero"><div class="profile-image"><img src="${c.sprite}" alt="${escape(c.name)}"></div><div><h3>${escape(c.name)}<span id="detail-level">Lv. ${c.level}</span></h3><p>${escape(c.title)}</p></div></div><p class="profile-label">A LITTLE MORE ABOUT ME</p><dl class="profile-traits"><div><dt>성격</dt><dd id="detail-personality">${escape(c.personality)}</dd></div><div><dt>선호하는 식습관</dt><dd id="detail-food">${escape(foodName(c.foodPreference))}</dd></div><div><dt>좋아하는 맛 · ${c.tastePreferences.length}가지</dt><dd id="detail-tastes">${c.tastePreferences.map(taste => `<span class="taste-chip">${escape(tasteName(taste))}</span>`).join('') || '<span class="taste-chip">아직 없어요</span>'}</dd></div></dl><p class="profile-label">ADVENTURE STATS</p><dl id="detail-stats">${Object.entries(STAT_LABELS).map(([key,label]) => `<div class="detail-stat" data-stat="${key}"><dt>${label}</dt><dd id="detail-${key}"></dd></div>`).join('')}</dl><p class="stat-explainer">방어는 물리 피해, 저항력은 마법 피해를 줄여요.<br>마나는 마법 공격에 사용하고, 속도는 이동에 반영돼요.</p><button class="primary-button" id="activate-companion"></button></section>`);
+  openModal('동료 이야기', `<section id="companion-detail" aria-label="캐릭터 상세 정보"><div class="profile-hero"><div class="profile-image"><img src="${c.sprite}" alt="${escape(c.name)}"></div><div><h3>${escape(c.name)}<span id="detail-level">Lv. ${c.level}</span></h3><p>${escape(c.title)}</p></div></div><p class="profile-label">A LITTLE MORE ABOUT ME</p><dl class="profile-traits"><div><dt>성격</dt><dd id="detail-personality">${escape(c.personality)}</dd></div><div><dt>선호하는 식습관</dt><dd id="detail-food">${escape(foodName(c.foodPreference))}</dd></div><div><dt>좋아하는 맛 · ${c.tastePreferences.length}가지</dt><dd id="detail-tastes">${c.tastePreferences.map(taste => `<span class="taste-chip">${escape(tasteName(taste))}</span>`).join('') || '<span class="taste-chip">아직 없어요</span>'}</dd></div></dl><p class="profile-label">ADVENTURE STATS</p><dl id="detail-stats">${Object.entries(STAT_LABELS).map(([key,label]) => `<div class="detail-stat" data-stat="${key}"><dt>${label}</dt><dd id="detail-${key}"></dd></div>`).join('')}</dl><p class="stat-explainer">방어는 물리 피해, 저항력은 마법 피해를 줄여요.<br>마나는 마법 공격에 사용하고, 속도는 이동에 반영돼요.</p><button class="primary-button" id="activate-companion"></button><button class="secondary-button full" id="toggle-companion-deployment"></button></section>`);
   modalCompanionId = id;
   $('modal').classList.add('companion-dialog');
   $('activate-companion').onclick = async () => {
     const result = await perform(() => selectCharacter(state,id), 'selectCharacter', { characterId: id });
-    if (result?.ok) {lastRoster = '';renderUI();renderWorld();reportRegions();}
+    if (result?.ok) {lastRoster = '';renderWorld();renderUI();reportRegions();}
   };
+  $('toggle-companion-deployment').onclick = () => toggleCompanionDeployment(id);
   renderCompanionDetail();
 }
 function renderCompanionDetail() {
@@ -444,9 +521,30 @@ function renderCompanionDetail() {
     $('detail-' + key).textContent = key === 'hp' ? `${Math.ceil(c.hp)} / ${c.maxHp}` : key === 'mana' ? `${Math.floor(c.mana)} / ${c.maxMana}` : String(c[key]);
   }
   const active = c.id === state.activeCharacterId;
-  $('activate-companion').textContent = active ? '지금 함께하는 동료' : `${withName(c.name)} 함께 모험하기`;
+  $('activate-companion').textContent = active ? '지금 선택한 동료' : `${c.name} 선택하기`;
   $('activate-companion').disabled = active;
   $('activate-companion').classList.toggle('companion-current', active);
+  const deployed = getDeployedCharacters(state), shown = deployed.some(item => item.id === c.id);
+  const toggle = $('toggle-companion-deployment');
+  toggle.textContent = shown ? '화면에서 보관하기' : '화면에 꺼내기';
+  toggle.disabled = shown ? deployed.length === 1 : deployed.length >= MAX_DEPLOYED_COMPANIONS;
+  $('activate-companion').disabled = active || (!shown && deployed.length >= MAX_DEPLOYED_COMPANIONS);
+}
+async function toggleCompanionDeployment(id) {
+  const deployed = !getDeployedCharacters(state).some(character => character.id === id);
+  const area = displayFor(state.character);
+  const result = await perform(() => setCharacterDeployed(state, id, deployed, innerWidth,
+    { displays: worldDisplays(), displayId: area.id }), 'setCharacterDeployed', { characterId: id, deployed });
+  if (result?.ok && !deployed) { surfaceWalker.forget(id); surfacePoses.delete(id); surfaceAnimations.delete(id); pendingPlacements.delete(id); }
+  reportRegions();
+}
+function focusCompanion(id) {
+  if (state.activeCharacterId === id) return;
+  // Selection is immediate presentation; all progress and online commands still
+  // target an explicit owned character on the authoritative server.
+  selectCharacter(state, id);
+  if (cloudActive) void perform(() => {}, 'selectCharacter', { characterId: id });
+  renderWorld(); renderUI(); save();
 }
 function syncActors(container, actors, create, update) {
   const live = new Set(actors.map(a => a.id));
@@ -458,48 +556,78 @@ function syncActors(container, actors, create, update) {
   }
 }
 function renderWorld() {
-  const pose = syncSurfacePose();
-  const c = state.character;
-  const char = $('character');
-  char.style.setProperty('--character-scale', characterScale());
-  char.dataset.scale = String(characterScale());
-  if (drag?.kind !== 'character') {char.style.left = (c.x - characterSize() / 2) + 'px'; char.style.bottom = '';}
-  char.className = `character interactive ${surfaceWalking ? 'walk' : c.action} ${drag?.kind === 'character' ? 'dragging' : ''} ${cloudActive && (!surfaceMode() || pose.onFloor) ? 'cloud-floor' : ''}`;
-  const sprite = $('character-sprite');
-  const spriteFrame = applyCharacterSprite(sprite, c, { paused, still: document.body.classList.contains('reduced-motion'),
-    ...(surfaceWalking && !(c.animationState === 'pet' && c.animationTimer > 0) ? { animation: 'walk', time: surfaceWalkTime } : {}) });
-  if (surfaceMode()) {
+  document.body.classList.toggle('surface-mode', surfaceMode() || nativeFloor());
+  const deployed = getDeployedCharacters(state);
+  // IDs remain stable aliases for the selected companion, while every actor is
+  // independently addressable by data-character-id.
+  for (const node of $('characters').querySelectorAll('[id]')) node.removeAttribute('id');
+  syncActors($('characters'), deployed, c => {
+    const node = document.createElement('div');
+    node.setAttribute('role', 'button'); node.tabIndex = 0;
+    node.dataset.characterId = c.id;
+    node.innerHTML = '<div class="speech"></div><div class="character-shadow"></div><img class="character-sprite" draggable="false"><div class="character-name"><span class="world-level"></span><span class="world-name"></span><i></i></div>';
+    return node;
+  }, (char, c) => {
+    const area = displayFor(c), pose = syncSurfacePose(c);
+    const animation = surfaceAnimations.get(c.id);
+    const dragging = drag?.kind === 'character' && drag.characterId === c.id;
+    const focused = c.id === state.activeCharacterId;
+    const sprite = char.querySelector('.character-sprite'), speech = char.querySelector('.speech');
+    if (focused) {
+      char.id = 'character'; sprite.id = 'character-sprite'; speech.id = 'speech';
+      char.querySelector('.world-name').id = 'world-name'; char.querySelector('.world-level').id = 'world-level';
+    }
+    char.style.setProperty('--character-scale', characterScale()); char.dataset.scale = String(characterScale());
+    char.dataset.displayId = c.displayId || area.id;
+    char.className = `character interactive ${animation?.walking ? 'walk' : c.action} ${dragging ? 'dragging' : ''} ${cloudActive && (!surfaceMode() || pose.onFloor) ? 'cloud-floor' : ''} ${focused ? 'is-focused' : ''}`;
+    char.setAttribute('aria-label', `${c.name}와 상호작용. 드래그하여 이동할 수 있습니다.`);
+    char.setAttribute('aria-pressed', String(focused));
+    const spriteFrame = applyCharacterSprite(sprite, c, { paused, still: document.body.classList.contains('reduced-motion'),
+      ...(animation?.walking && !(c.animationState === 'pet' && c.animationTimer > 0) ? { animation: 'walk', time: animation.time } : {}) });
     const inset = getCharacterFootInset(c, characterSize(), spriteFrame);
-    char.style.bottom = (innerHeight - pose.footY - 16 - inset) + 'px';
-    char.style.left = (pose.x - characterSize() / 2) + 'px';
-    char.style.setProperty('--foot-inset', inset + 'px');
-    char.dataset.surfaceId = pose.surfaceId || '';
-    char.dataset.surfaceKind = pose.surfaceKind || 'air';
-    char.dataset.footY = String(pose.footY);
-  } else {
-    delete char.dataset.surfaceId; delete char.dataset.surfaceKind; delete char.dataset.footY;
-    char.style.removeProperty('--foot-inset');
-  }
-  char.classList.toggle('custom-character', Boolean(c.custom || c.spriteSheet));
-  sprite.alt = c.name;
-  sprite.style.scale = `${c.facing} 1`;
-  const speech = $('speech');
-  speech.textContent = c.speechTime > 0 ? c.speech : '';
-  const speechHalf = speech.offsetWidth / 2;
-  const speechCenter = Math.max(speechHalf + 8, Math.min(innerWidth - speechHalf - 8, c.x));
-  speech.style.left = (characterSize() / 2 + speechCenter - c.x) + 'px';
+    const footMode = surfaceMode() || nativeFloor();
+    char.style.left = (c.x - characterSize() / 2) + 'px';
+    if (footMode || dragging) {
+      const footY = dragging ? drag.footY : surfaceMode() ? pose.footY : area.floorY;
+      char.style.bottom = (innerHeight - footY - 16 - inset) + 'px';
+      char.style.setProperty('--foot-inset', inset + 'px');
+      char.dataset.surfaceId = pose.surfaceId || ''; char.dataset.surfaceKind = dragging ? 'air' : pose.surfaceKind || 'floor';
+      char.dataset.footY = String(footY);
+    } else {
+      char.style.bottom = (innerHeight - area.floorY + floor()) + 'px';
+      delete char.dataset.surfaceId; delete char.dataset.surfaceKind; delete char.dataset.footY;
+      char.style.removeProperty('--foot-inset');
+    }
+    char.classList.toggle('custom-character', Boolean(c.custom || c.spriteSheet));
+    sprite.alt = c.name; sprite.style.scale = `${c.facing} 1`;
+    char.querySelector('.world-name').textContent = c.name; char.querySelector('.world-level').textContent = 'Lv.' + c.level;
+    speech.textContent = c.speechTime > 0 ? c.speech : '';
+    const speechHalf = speech.offsetWidth / 2;
+    const speechCenter = Math.max(area.x + speechHalf + 8, Math.min(area.x + area.width - speechHalf - 8, c.x));
+    speech.style.left = (characterSize() / 2 + speechCenter - c.x) + 'px';
+  });
+  syncActors($('drop-zones'), worldDisplays(), () => {
+    const zone = document.createElement('div'); zone.className = 'drop-zone';
+    zone.setAttribute('aria-label', '던전 코어 배치 영역');
+    zone.innerHTML = '<span class="drop-plus">+</span><span>이곳에 던전 코어를 놓아 주세요</span>';
+    return zone;
+  }, (zone, area) => {
+    zone.id = area.id === primaryDisplay().id ? 'drop-zone' : '';
+    zone.style.left = (area.x + 22) + 'px'; zone.style.width = Math.max(1, area.width - 44) + 'px';
+    zone.style.bottom = (innerHeight - area.floorY + (nativeFloor() ? 8 : floor() + 8)) + 'px';
+  });
   syncActors($('portals'), state.portals, p => {
     const el = document.createElement('button');
     el.className = 'portal interactive';
     el.innerHTML = `<span class="portal-label"></span><span class="portal-glow"></span><img src="assets/portal-${p.coreId}.svg" alt="${typeFor(p.coreId).name} 던전 입구">`;
     el.addEventListener('click', () => {const active = state.portals.find(a => a.id === p.id); if (active) notify(`${typeFor(active.coreId).monsterName} ${active.defeated}/${active.total}마리 처치 · 모험 명령으로 싸워 주세요.`);});
     return el;
-  }, (el,p) => {el.style.left = p.x + 'px';el.querySelector('.portal-label').textContent = `${typeFor(p.coreId).name.replace(' 코어','')} · ${p.defeated}/${p.total}`;});
+  }, (el,p) => {el.style.left = p.x + 'px';el.style.bottom = (innerHeight - displayFor(p).floorY + (nativeFloor() ? 6 : floor() + 6)) + 'px';el.querySelector('.portal-label').textContent = `${typeFor(p.coreId).name.replace(' 코어','')} · ${p.defeated}/${p.total}`;});
   syncActors($('monsters'), state.monsters, m => {
     const el = document.createElement('div'); el.className = 'monster';
     el.innerHTML = `<div class="monster-health"><i></i></div><img src="assets/${m.type === 'grove' ? 'slime' : m.type}.svg" alt="${escape(m.name)}">`;
     return el;
-  }, (el,m) => {el.style.left = m.x + 'px';el.querySelector('i').style.width = (m.hp / m.maxHp * 100) + '%';});
+  }, (el,m) => {el.style.left = m.x + 'px';el.style.bottom = (innerHeight - displayFor(m).floorY + (nativeFloor() ? 0 : floor() + 18)) + 'px';el.querySelector('i').style.width = (m.hp / m.maxHp * 100) + '%';});
   syncActors($('effects'), state.effects, e => {
     const el = document.createElement('div'); el.className = 'floating-effect ' + e.kind;
     const item = e.kind === 'loot' ? itemFor(e.itemId) : null;
@@ -510,6 +638,7 @@ function renderWorld() {
     } else el.textContent = e.text;
     return el;
   }, (el,e) => {
+    el.style.bottom = (innerHeight - displayFor(e).floorY + (nativeFloor() ? 0 : floor()) + (e.kind === 'loot' ? 28 : 90)) + 'px';
     const half = e.kind === 'loot' ? el.offsetWidth / 2 + 8 : 0;
     el.style.left = Math.max(half, Math.min(innerWidth - half, e.x)) + 'px';
     el.style.transform = `translate(-50%,${-(1.4 - e.life) * 40 - (e.lootIndex || 0) * 34}px)`;
@@ -518,10 +647,11 @@ function renderWorld() {
   if (!$('character-menu').hidden) positionCharacterMenu();
 }
 function positionCharacterMenu() {
-  const menu = $('character-menu');
-  menu.style.left = Math.max(12, Math.min(innerWidth - menu.offsetWidth - 12, state.character.x - menu.offsetWidth / 2)) + 'px';
-  const characterTop = $('character').getBoundingClientRect().top;
-  menu.style.bottom = Math.max(12, Math.min(innerHeight - menu.offsetHeight - 12, innerHeight - characterTop + 12)) + 'px';
+  const menu = $('character-menu'), area = displayFor(state.character), actor = $('character');
+  if (!actor) return;
+  menu.style.left = Math.max(area.x + 12, Math.min(area.x + area.width - menu.offsetWidth - 12, state.character.x - menu.offsetWidth / 2)) + 'px';
+  const top = Math.max(area.y + 12, Math.min(area.y + area.height - menu.offsetHeight - 12, actor.getBoundingClientRect().top - menu.offsetHeight - 12));
+  menu.style.top = top + 'px'; menu.style.bottom = 'auto';
 }
 function selectCore(id) {
   if (paused) {notify('계속하기를 누른 뒤 코어를 배치해 주세요.'); return false;}
@@ -543,16 +673,18 @@ function cancelPlacement() {
 }
 async function placeAt(x,y) {
   if (!selectedCore) return;
-  const zone = $('drop-zone').getBoundingClientRect();
-  if (y < zone.top || y > zone.bottom || x < zone.left || x > zone.right) {notify('점선으로 표시된 초원 바닥에 놓아 주세요.');return;}
-  const result = await perform(() => deployCore(state, selectedCore, x, innerWidth), 'deployCore', { coreId: selectedCore, x });
+  const area = displayForPoint(worldDisplays(), x, y);
+  const zone = [...$('drop-zones').children].find(node => node.dataset.id === area.id)?.getBoundingClientRect();
+  if (!zone || y < zone.top || y > zone.bottom || x < zone.left || x > zone.right) {notify('점선으로 표시된 초원 바닥에 놓아 주세요.');return;}
+  const coreId = selectedCore;
+  const result = await perform(() => deployCore(state, coreId, x, innerWidth, { displays: worldDisplays(), displayId: area.id }), 'deployCore', { coreId, x, displayId: area.id });
   if (result?.ok) {cancelPlacement(); if (innerWidth < 760) toggleMenu(false);}
 }
 
 function reportRegions() {
   if (!desktop) return;
   const targets = [...document.querySelectorAll('.interactive')];
-  if (selectedCore) targets.push($('drop-zone'));
+  if (selectedCore) targets.push(...$('drop-zones').children);
   if (paused) targets.push($('resume-button'));
   const rects = targets.filter(n => n.getClientRects().length && getComputedStyle(n).visibility !== 'hidden').map(n => {const r = n.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};});
   desktop.setInteractiveRegions(rects);
@@ -560,9 +692,11 @@ function reportRegions() {
 }
 function startDrag(event, kind, extra = {}) {
   if (event.button !== 0 || drag) return;
-  drag = {kind, startX:event.clientX, startY:event.clientY, moved:false, pointerId:event.pointerId, target:event.currentTarget, ...extra};
-  event.currentTarget.setPointerCapture(event.pointerId);
+  const target = extra.target || event.currentTarget;
+  drag = {kind, startX:event.clientX, startY:event.clientY, moved:false, pointerId:event.pointerId, ...extra, target};
+  target.setPointerCapture(event.pointerId);
   desktop?.setMouseCapture(true);
+  if (kind === 'character' && cloudActive) { lastCloudSync = 0; void syncCloudGame(); }
 }
 $('core-list').addEventListener('pointerdown', e => {
   const card = e.target.closest('[data-core]');
@@ -571,14 +705,24 @@ $('core-list').addEventListener('pointerdown', e => {
   $('drag-preview').querySelector('img').src = `assets/core-${card.dataset.core}.svg`;
 });
 $('core-list').addEventListener('click', e => {if (e.detail === 0) {const card = e.target.closest('[data-core]');if (card) selectCore(card.dataset.core);}});
-$('character').addEventListener('pointerdown', e => {
-  if (selectedCore || e.button !== 0 || drag) return;
-  const pose = syncSurfacePose();
-  const box = $('character').getBoundingClientRect();
-  startDrag(e, 'character', {x:cloudActive && (!surfaceMode() || pose.onFloor) ? box.left + box.width / 2 : state.character.x, bottom:innerHeight - box.bottom,
-    surface: surfaceMode(), startFootY: pose.footY, footY: pose.footY});
+$('characters').addEventListener('pointerdown', e => {
+  const node = e.target.closest('[data-character-id]');
+  if (!node || selectedCore || e.button !== 0 || drag) return;
+  const character = state.characters.find(c => c.id === node.dataset.characterId);
+  if (!character) return;
+  focusCompanion(character.id);
+  const pose = syncSurfacePose(character), box = node.getBoundingClientRect();
+  const footY = surfaceMode() || nativeFloor() ? pose.footY : box.bottom - 16 - getCharacterFootInset(character, characterSize());
+  startDrag(e, 'character', { target: node, characterId: character.id, x: box.left + box.width / 2,
+    surface: surfaceMode(), startFootY: footY, footY, startDisplayId: character.displayId });
 });
-$('character').addEventListener('keydown', e => {if (e.key === 'Enter' || e.key === ' ') {e.preventDefault();$('character-menu').hidden = !$('character-menu').hidden;positionCharacterMenu();reportRegions();}});
+$('characters').addEventListener('keydown', e => {
+  const node = e.target.closest('[data-character-id]');
+  if (node && (e.key === 'Enter' || e.key === ' ')) {
+    e.preventDefault(); focusCompanion(node.dataset.characterId);
+    $('character-menu').hidden = !$('character-menu').hidden; positionCharacterMenu(); reportRegions();
+  }
+});
 $('dock-handle').addEventListener('pointerdown', e => {
   if (e.target.closest('button')) return;
   const rect = $('dock').getBoundingClientRect();startDrag(e,'dock',{x:rect.x,y:rect.y});
@@ -590,40 +734,45 @@ window.addEventListener('pointermove', e => {
   if (!drag.moved) return;
   if (drag.kind === 'core') {$('drag-preview').hidden = false;$('drag-preview').style.transform = `translate(${e.clientX-32}px,${e.clientY-32}px)`;}
   if (drag.kind === 'character') {
-    state.character.x = clampX(drag.x + dx);
-    if (drag.surface) {
-      drag.footY = Math.max(Math.min(characterSize(), innerHeight), Math.min(innerHeight, drag.startFootY + dy));
-      surfacePose = surfaceWalker.beginDrag(surfaceOptions({ footY: drag.footY }));
-      renderWorld();
-    } else {
-      $('character').style.left = (state.character.x - characterSize() / 2) + 'px';
-      $('character').style.bottom = Math.max(floor(), Math.min(innerHeight - $('character').offsetHeight - 8, drag.bottom - dy)) + 'px';
-    }
-    $('character-menu').hidden = true;
+    const character = state.characters.find(c => c.id === drag.characterId);
+    if (!character) return;
+    const area = displayForPoint(worldDisplays(), e.clientX, e.clientY);
+    const point = clampCharacterPoint(area, drag.x + dx, drag.startFootY + dy, characterSize());
+    character.x = point.x; character.displayId = area.id; drag.footY = point.footY;
+    if (drag.surface) surfacePoses.set(character.id, surfaceWalker.beginDrag(surfaceOptions(character, { footY: drag.footY })));
+    $('character-menu').hidden = true; renderWorld();
   }
-  if (drag.kind === 'dock') {customDock = true;$('dock').style.right = 'auto';$('dock').style.left = Math.max(8,Math.min(innerWidth - $('dock').offsetWidth - 8,drag.x + dx)) + 'px';$('dock').style.top = Math.max(8,Math.min(innerHeight - $('dock').offsetHeight - 70,drag.y + dy)) + 'px';}
+  if (drag.kind === 'dock') {customDock = true;clampDock(drag.x + dx, drag.y + dy);}
+
 });
 function endDrag(e, cancelled = false) {
-  if (!drag) return;
-  if (e.pointerId !== undefined && e.pointerId !== drag.pointerId) return;
-  const previous = drag;drag = null;
+  if (!drag || (e.pointerId !== undefined && e.pointerId !== drag.pointerId)) return;
+  const previous = drag; drag = null;
   try {previous.target.releasePointerCapture(previous.pointerId);} catch {}
-  if (previous.kind === 'character' && previous.surface) {
-    surfacePose = surfaceWalker.release(surfaceOptions({ footY: previous.footY }));
-    state.character.x = surfacePose.x;
-  }
   if (previous.kind === 'core' && previous.moved && !cancelled) {
     const hit = document.elementFromPoint(e.clientX,e.clientY);
     if (hit?.closest('.dock,#bottom-bar,#modal')) notify('메뉴 바깥의 초원 바닥에 놓아 주세요.');
-    else placeAt(e.clientX,e.clientY);
+    else void placeAt(e.clientX,e.clientY);
   }
-  if (previous.kind === 'character' && !cancelled) {
-    if (previous.moved && cloudActive) { pendingDragX = state.character.x; lastCloudSync = 0; }
-    if (previous.moved) {state.wanderTarget = state.character.x;state.cooldowns.wander = 2;state.character.speech = previous.surface && state.character.command === 'fight' ? '모험은 바닥에서 계속할게!' : '여기도 멋진 곳이네!';state.character.speechTime = 3;save();}
-    else {$('character-menu').hidden = !$('character-menu').hidden;positionCharacterMenu();}
+  if (previous.kind === 'character') {
+    const character = state.characters.find(c => c.id === previous.characterId);
+    if (character) {
+      if (cancelled && previous.moved) {
+        character.x = previous.x; character.displayId = previous.startDisplayId; surfaceWalker.forget(character.id);
+        if (cloudActive) pendingPlacements.set(character.id, { x: character.x, displayId: character.displayId });
+      }
+      else if (previous.moved) {
+        moveCharacter(state, character.id, character.x, innerWidth, { displays: worldDisplays(), displayId: character.displayId });
+        if (cloudActive) { pendingPlacements.set(character.id, { x: character.x, displayId: character.displayId }); lastCloudSync = 0; }
+        character.speech = previous.surface && character.command === 'fight' ? '모험은 바닥에서 계속할게!' : '여기도 멋진 곳이네!'; character.speechTime = 3;
+      } else if (!cancelled) { $('character-menu').hidden = !$('character-menu').hidden; positionCharacterMenu(); }
+      if (previous.surface && !cancelled) surfacePoses.set(character.id, surfaceWalker.release(surfaceOptions(character, { footY: previous.footY })));
+      save();
+      if (cloudActive) { lastCloudSync = 0; void syncCloudGame(); }
+    }
   }
-  $('character').style.bottom = '';$('drag-preview').hidden = true;
-  renderUI();renderWorld();reportRegions();
+  $('drag-preview').hidden = true;
+  renderWorld(); renderUI(); reportRegions();
 }
 window.addEventListener('pointerup', e => endDrag(e));
 window.addEventListener('pointercancel', e => {
@@ -647,7 +796,7 @@ function openModal(title, content) {
   reportRegions();
 }
 function openHelp() {
-  openModal('작은 모험을 시작해 볼까요?', `<p class="modal-copy">카페몽은 바탕화면에서 함께 자라는 작은 친구예요.<br>천천히, 당신의 속도로 놀아 주세요.</p><div class="guide-step"><span>1</span><div><strong>먼저 카페몽과 인사해요</strong><p>캐릭터를 눌러 쓰다듬거나 대화해 보세요.<br>드래그하면 원하는 곳으로 옮길 수 있어요.</p></div></div><div class="guide-step"><span>2</span><div><strong>코어로 던전을 열어요</strong><p>가방의 코어를 바닥으로 끌어 놓으세요. 코어를 선택하고 바닥을 눌러도 돼요. 던전은 동시에 3개까지 열려요.</p></div></div><div class="guide-step"><span>3</span><div><strong>모험하고, 돌보고, 성장해요</strong><p>‘모험’을 선택하면 카페몽이 몬스터와 싸워요. 경험치와 골드로 성장하고, 휴식과 간식으로 회복해 주세요. 상점과 오늘의 선물에서 코어를 얻어요.</p></div></div><p class="talk-hint">메뉴 상단을 잡아 이동 · 우측 하단 버튼으로 메뉴 접기<br>Esc: 배치 취소 · 데스크톱 앱: Ctrl/⌘ + Shift + M으로 메뉴 전환</p><button class="primary-button full" id="start-guide">카페몽과 함께하기</button>`);
+  openModal('작은 모험을 시작해 볼까요?', `<p class="modal-copy">카페몽은 바탕화면에서 함께 자라는 작은 친구예요.<br>천천히, 당신의 속도로 놀아 주세요.</p><div class="guide-step"><span>1</span><div><strong>여러 동료와 함께해요</strong><p>동료 탭에서 최대 6명까지 화면에 꺼내세요. 동료를 누르면 그 동료를 돌보고 지시할 수 있어요.<br>드래그해서 다른 모니터나 창 위로 옮겨 보세요.</p></div></div><div class="guide-step"><span>2</span><div><strong>코어로 던전을 열어요</strong><p>가방의 코어를 바닥으로 끌어 놓으세요. 코어를 선택하고 바닥을 눌러도 돼요. 던전은 동시에 3개까지 열려요.</p></div></div><div class="guide-step"><span>3</span><div><strong>모험하고, 돌보고, 성장해요</strong><p>‘모험’을 선택하면 카페몽이 몬스터와 싸워요. 경험치와 골드로 성장하고, 휴식과 간식으로 회복해 주세요. 상점과 오늘의 선물에서 코어를 얻어요.</p></div></div><p class="talk-hint">메뉴 상단을 잡아 이동 · 우측 하단 버튼으로 메뉴 접기<br>Esc: 배치 취소 · 데스크톱 앱: Ctrl/⌘ + Shift + M으로 메뉴 전환</p><button class="primary-button full" id="start-guide">카페몽과 함께하기</button>`);
   $('start-guide').onclick = () => $('modal').close();
 }
 function openShop() {
@@ -669,7 +818,7 @@ function openTalk() {
   $('talk-form').onsubmit = e => {
     e.preventDefault();const text = $('talk-input').value.trim();if (!text) return;
     let reply = /성격/.test(text) ? c.personality : /음식|식성|맛/.test(text) ? `나는 ${foodName(c.foodPreference)}을(를) 좋아해!${c.tastePreferences.length ? ` 특히 ${c.tastePreferences.map(tasteName).join(', ')}이면 더 좋아.` : ' 다양한 맛을 알아가는 중이야.'}` : /안녕|반가/.test(text) ? '안녕! 네가 와서 초원이 더 따뜻해졌어.' : /사랑|좋아|귀여/.test(text) ? '나도 네가 정말 좋아! 우리 오래오래 함께하자. ♡' : /힘들|슬퍼|피곤/.test(text) ? '오늘도 수고했어. 내가 옆에 있을게. 잠깐 같이 쉬자.' : /모험|싸워|전투/.test(text) ? '모험 준비 완료! 상태 창에서 모험을 눌러 주면 출발할게.' : /쉬|자자|잘자/.test(text) ? '하암… 포근한 휴식도 중요하지. 휴식 버튼으로 함께 쉬어 가자.' : /배고|밥|간식/.test(text) ? '냠냠, 맛있는 음식 생각이 나! 가방의 돌보기에서 식사를 고를 수 있어.' : /이름|누구/.test(text) ? `나는 ${c.name}! ${c.title}야.` : '응, 듣고 있어. 너와 함께하는 이 시간이 좋아.';
-    $('talk-reply').textContent = reply;state.character.speech = reply;state.character.speechTime = 6;$('talk-input').value = '';
+    $('talk-reply').textContent = reply;const target = state.characters.find(character => character.id === c.id);if (target) {target.speech = reply;target.speechTime = 6;}$('talk-input').value = '';
   };
   $('talk-input').focus();
 }
@@ -726,7 +875,7 @@ function openSettings(initialTab = 'general') {
   for (const button of document.querySelectorAll('[data-character-scale]')) {
     button.onclick = async () => {
       const scale = Number(button.dataset.characterScale);
-      const result = cloudActive ? await perform(() => {}, 'setCharacterScale', { scale }) : setCharacterScale(state, scale, document.documentElement.clientWidth);
+      const result = cloudActive ? await perform(() => {}, 'setCharacterScale', { scale }) : setCharacterScale(state, scale, document.documentElement.clientWidth, { displays: worldDisplays() });
       if (!result?.ok) { if (result?.message) notify(result.message); return; }
       for (const control of document.querySelectorAll('[data-character-scale]')) control.setAttribute('aria-pressed', String(Number(control.dataset.characterScale) === characterScale()));
       renderWorld(); reportRegions();
@@ -758,10 +907,10 @@ function openSettings(initialTab = 'general') {
           clearCompanionPlacement(); applyCloudGame(response);
           $('modal').close(); notify('계정 모험을 처음부터 시작해요.'); return;
         }
-        const nextState = createGame(); nextState.character.x = innerWidth * .39;
+        const nextState = createGame(); nextState.character.x = primaryDisplay().x + primaryDisplay().width * .39;
         for (const character of state.characters) surfaceWalker.forget(character.id);
         for (const item of state.customDefinitions) rememberSheetCleanup(item.sheetId);
-        commitGuestState(nextState);
+        commitGuestState(nextState); normalizePlacement();
         for (const id of [...sheetURLs.keys()]) releaseSheetURL(id);
         lastInventory = '';
         $('quest-title').textContent = '작은 모험의 시작';
@@ -787,24 +936,54 @@ $('close-modal').onclick = () => $('modal').close();
 $('modal').addEventListener('close', () => {if ($('modal').open) return;settingsGeneration += 1;accountPanel?.dispose();accountPanel=null;modalCompanionId=null;reportRegions();});
 $('help-button').onclick = openHelp;$('guide-link').onclick = openHelp;
 $('shop-button').onclick = openShop;$('settings-button').onclick = openSettings;
-$('pet-action').onclick = $('care-pet').onclick = () => perform(() => petCharacter(state), 'pet');
-$('feed-action').onclick = () => perform(() => feedCharacter(state), 'feed', { foodId: 'snack' });
-$('care-feed').onclick = () => perform(() => feedCharacter(state,$('food-select').value), 'feed', { foodId: $('food-select').value });
+function careAction(type, value) {
+  const characterId = state.activeCharacterId;
+  if (type === 'pet') return perform(() => petCharacter(state, characterId), 'pet', { characterId });
+  if (type === 'feed') return perform(() => feedCharacter(state, value, characterId), 'feed', { foodId: value, characterId });
+  return perform(() => setCommand(state, value, characterId), 'command', { command: value, characterId });
+}
+$('pet-action').onclick = $('care-pet').onclick = () => careAction('pet');
+$('feed-action').onclick = () => careAction('feed', 'snack');
+$('care-feed').onclick = () => careAction('feed', $('food-select').value);
 $('food-select').onchange = renderFoodPreview;
 $('active-detail-button').onclick = () => openCompanionDetail(state.activeCharacterId);
-$('roster-grid').onclick = e => {const card=e.target.closest('[data-companion]');if (card) openCompanionDetail(card.dataset.companion);};
-$('care-rest').onclick = () => perform(() => setCommand(state,'rest'), 'command', { command: 'rest' });
+$('roster-grid').onclick = e => {
+  const control = e.target.closest('[data-deploy-character]');
+  if (control) { void toggleCompanionDeployment(control.dataset.deployCharacter); return; }
+  const card = e.target.closest('[data-companion]'); if (card) openCompanionDetail(card.dataset.companion);
+};
+$('care-rest').onclick = () => careAction('command', 'rest');
 $('talk-action').onclick = openTalk;
-$('adventure-action').onclick = () => {perform(() => setCommand(state,'fight'), 'command', { command: 'fight' });$('character-menu').hidden = true;};
+$('adventure-action').onclick = () => {void careAction('command', 'fight');$('character-menu').hidden = true;};
 $('daily-button').onclick = () => perform(() => claimDaily(state), 'claimDaily');
 for (const node of document.querySelectorAll('[data-tab]')) node.onclick = () => setTab(node.dataset.tab);
-for (const node of document.querySelectorAll('[data-command]')) node.onclick = () => perform(() => setCommand(state,node.dataset.command), 'command', { command: node.dataset.command });
+for (const node of document.querySelectorAll('[data-command]')) node.onclick = () => careAction('command', node.dataset.command);
 document.querySelector('.brand').onclick = e => {e.preventDefault();toggleMenu(true);};
 document.addEventListener('keydown', e => {if (e.key === 'Escape') {cancelPlacement();$('character-menu').hidden = true;}});
 desktop?.onToggleMenu(() => toggleMenu());
+desktop?.onDisplays?.(snapshot => {
+  const next = readDesktopLayout(snapshot);
+  if (!next) return;
+  if (drag) endDrag({}, true);
+  desktopLayout = next; topologyReady = true;
+  for (const character of state.characters) surfaceWalker.forget(character.id);
+  surfacePoses.clear();
+  normalizePlacement(); positionPrimaryUI();
+  if (cloudActive) {
+    // Geometry is sent to the server for authoritative remapping. Render a safe
+    // temporary placement without stepping online combat while that sync runs.
+    remapVisualLayout(state);
+    for (const character of getDeployedCharacters(state)) if (pendingPlacements.has(character.id)) {
+      pendingPlacements.set(character.id, { x: character.x, displayId: character.displayId });
+    }
+    lastCloudSync = 0;
+  }
+  renderWorld(); renderUI(); reportRegions(); save();
+  resolveTopology?.(); resolveTopology = null;
+});
+desktop?.requestDisplays?.();
 desktop?.onSurfaces?.(snapshot => {
-  surfaceSnapshot = snapshot;
-  surfaceWalker.updateSnapshot(snapshot);
+  surfaceSnapshot = snapshot; surfaceWalker.updateSnapshot(snapshot);
   renderWorld(); reportRegions();
   if ($('window-walking-status')) $('window-walking-status').textContent = surfaceStatusText();
 });
@@ -812,37 +991,43 @@ desktop?.requestSurfaces?.();
 window.addEventListener('beforeunload', save);
 document.addEventListener('visibilitychange', () => {lastFrame = performance.now();if (document.hidden) save();});
 window.addEventListener('resize', () => {
-  stepGame(state,0,innerWidth);
-  if (customDock) {const r=$('dock').getBoundingClientRect();$('dock').style.left=Math.max(8,Math.min(innerWidth-r.width-8,r.x))+'px';$('dock').style.top=Math.max(8,Math.min(innerHeight-r.height-70,r.y))+'px';}
-  renderWorld();reportRegions();
+  // Electron follows with a topology event. A viewport-only fallback here would
+  // otherwise overwrite the saved positions on left/upper monitors.
+  if (!desktop?.requestDisplays) normalizePlacement();
+  positionPrimaryUI(); if (customDock) clampDock();
+  renderWorld(); reportRegions();
 });
 
 function frame(now) {
-  const dt = Math.min((now-lastFrame)/1000,.1);lastFrame=now;
-  const before = syncSurfacePose();
-  const running = !paused && !cloudBlocked && !document.hidden && drag?.kind !== 'character';
-  if (running && !cloudActive) stepGame(state,dt,innerWidth,Math.random,{ onElevatedSurface: surfaceMode() && !before.onFloor });
+  const dt = Math.min((now-lastFrame)/1000,.1); lastFrame=now;
+  const characters = getDeployedCharacters(state);
+  const elevatedCharacterIds = characters.filter(c => surfaceMode() && !syncSurfacePose(c).onFloor).map(c => c.id);
+  const running = topologyReady && !paused && !cloudBlocked && !document.hidden;
+  const pausedCharacterIds = drag?.kind === 'character' ? [drag.characterId] : [];
+  if (running && !cloudActive) stepGame(state,dt,innerWidth,Math.random,{ displays: worldDisplays(), elevatedCharacterIds, pausedCharacterIds });
   else if (running && cloudActive) {
     // Online rewards/progress come only from the server. Advance visual time,
     // never roll loot or resolve combat again on the client.
-    state.character.animationTime += dt;
-    state.character.speechTime = Math.max(0, state.character.speechTime - dt);
+    for (const character of characters) if (!pausedCharacterIds.includes(character.id)) {
+      character.animationTime += dt;
+      character.speechTime = Math.max(0, character.speechTime - dt);
+    }
     state.effects = state.effects.filter(effect => (effect.life -= dt) > 0);
   }
-  syncSurfacePose(running ? dt : 0, true);
+  for (const character of getDeployedCharacters(state)) syncSurfacePose(character, running ? dt : 0, true);
   renderWorld();
   if (now-lastUI>200) {renderUI();lastUI=now;}
   if (now-lastRegions>100) {reportRegions();lastRegions=now;}
-  if (now-lastSave>5000) {save();lastSave=now;}
+  if (topologyReady && now-lastSave>5000) {save();lastSave=now;}
   if (cloudActive && !account.user && !cloudBusy) {
     void restoreGuestGame(); notify('로그인이 만료되어 이 기기의 모험으로 돌아왔어요.');
-  } else if (cloudActive && now-lastCloudSync>1000 && !cloudBusy && drag?.kind !== 'character') void syncCloudGame();
+  } else if (cloudActive && now-lastCloudSync>1000 && !cloudBusy) void syncCloudGame();
   requestAnimationFrame(frame);
 }
 if (matchMedia('(prefers-reduced-motion: reduce)').matches) document.body.classList.add('reduced-motion');
-// Clamp restored desktop coordinates before they can widen a narrow viewport.
-stepGame(state, 0, document.documentElement.clientWidth);
-setScene(sceneMode);renderUI();renderWorld();requestAnimationFrame(frame);
+// Native topology must arrive before restoring multi-monitor positions.
+normalizePlacement();
+setScene(sceneMode);renderWorld();renderUI();requestAnimationFrame(frame);
 restoreSpriteSheets();
 cleanupSpriteSheets();
 account.initialize().then(user => user ? activateCloudGame() : null).catch(cause => {

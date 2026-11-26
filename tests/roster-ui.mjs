@@ -181,7 +181,7 @@ try {
 
   const page = await openPage({ seed: progressedSave });
   const migrated = await readSave(page);
-  assert.equal(migrated.version, 3);
+  assert.equal(migrated.version, 4);
   assert.equal(migrated.character.level, 4);
   assert.equal(migrated.character.xp, 17);
   assert.equal(migrated.character.hp, 90);

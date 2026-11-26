@@ -6,6 +6,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { createHash } = require('node:crypto');
 const { buildSurfaceSnapshot, createWindowSurfaceTracker } = require('./window-surfaces.cjs');
+const { buildDisplayLayout, desktopBounds, pointInDisplays } = require('./display-layout.cjs');
 const { readRuntimeConfig, createSessionVault, createServiceBridge } = require('./service-bridge.cjs');
 
 const PAGE = path.resolve(__dirname, '..', 'index.html');
@@ -24,6 +25,7 @@ let ignoresMouse = null;
 let startupFailed = false;
 let surfaceTracker;
 let serviceBridge;
+let displayLayout;
 
 function showStartupError(error) {
   if (startupFailed) return;
@@ -60,11 +62,16 @@ function setIgnoringMouse(ignore) {
 function updateHitTest() {
   if (!window || window.isDestroyed()) return;
   if (mouseCaptured && Date.now() > captureUntil) mouseCaptured = false;
-  if (sceneMode || mouseCaptured) return setIgnoringMouse(false);
   const cursor = screen.getCursorScreenPoint();
   const bounds = window.getBounds();
   const x = cursor.x - bounds.x;
   const y = cursor.y - bounds.y;
+  if (!pointInDisplays(displayLayout, { x, y })) return setIgnoringMouse(true);
+  if (mouseCaptured) return setIgnoringMouse(false);
+  // Sprite labels can extend below their feet. Those rectangles must not steal
+  // taskbar clicks; an active drag can still finish outside the work area.
+  if (!pointInDisplays(displayLayout, { x, y }, true)) return setIgnoringMouse(true);
+  if (sceneMode) return setIgnoringMouse(false);
   const hit = regions.some(rect => x >= rect.x && y >= rect.y
     && x <= rect.x + rect.width && y <= rect.y + rect.height);
   setIgnoringMouse(!hit);
@@ -72,21 +79,37 @@ function updateHitTest() {
 
 function fitWorkArea() {
   if (!window || window.isDestroyed()) return;
-  const bounds = screen.getPrimaryDisplay().workArea;
-  window.setBounds(bounds);
+  displayLayout = buildDisplayLayout(screen.getAllDisplays(), screen.getPrimaryDisplay().id);
+  window.setBounds(desktopBounds(displayLayout));
+  // Coordinates from the previous topology are no longer valid for hit tests.
+  regions = [];
+  mouseCaptured = false;
+  sendDisplays();
   surfaceTracker?.setGeometry(getSurfaceGeometry());
   updateHitTest();
 }
 
 function getSurfaceGeometry() {
-  const display = screen.getPrimaryDisplay();
   return {
-    bounds: window && !window.isDestroyed() ? window.getBounds() : display.workArea,
-    displayBounds: display.bounds,
+    bounds: window && !window.isDestroyed() ? window.getBounds() : desktopBounds(displayLayout),
+    displays: displayLayout.displays.map(display => ({
+      id: display.id, scaleFactor: display.scaleFactor,
+      bounds: { x: display.x + displayLayout.origin.x, y: display.y + displayLayout.origin.y,
+        width: display.width, height: display.height },
+      workArea: { ...display.workArea, x: display.workArea.x + displayLayout.origin.x,
+        y: display.workArea.y + displayLayout.origin.y },
+    })),
     // The helper enumerates physical pixels; the overlay and pointer events use
     // DIP. Electron also handles negative monitor origins and display scaling.
     screenToDipRect: rect => process.platform === 'win32' ? screen.screenToDipRect(null, rect) : rect,
+    dipToScreenRect: rect => process.platform === 'win32' ? screen.dipToScreenRect(null, rect) : rect,
   };
+}
+
+function sendDisplays() {
+  if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) {
+    window.webContents.send('desktop:displays', displayLayout);
+  }
 }
 
 function sendSurfaces(snapshot) {
@@ -130,8 +153,9 @@ function makeTrayIcon() {
 }
 
 function createWindow() {
+  displayLayout = buildDisplayLayout(screen.getAllDisplays(), screen.getPrimaryDisplay().id);
   window = new BrowserWindow({
-    ...screen.getPrimaryDisplay().workArea,
+    ...desktopBounds(displayLayout),
     title: '몽글몽 · MongleMong',
     transparent: true,
     backgroundColor: '#00000000',
@@ -142,6 +166,7 @@ function createWindow() {
     resizable: false,
     movable: false,
     fullscreenable: false,
+    enableLargerThanScreen: true,
     show: false,
     focusable: true,
     webPreferences: {
@@ -166,6 +191,7 @@ function createWindow() {
   window.webContents.session.setPermissionCheckHandler(() => false);
   window.once('ready-to-show', () => {
     window.showInactive();
+    sendDisplays();
     updateHitTest();
     surfaceTracker.start();
   });
@@ -224,6 +250,10 @@ ipcMain.on('desktop:request-surfaces', event => {
     ?? buildSurfaceSnapshot(null, getSurfaceGeometry(), process.platform === 'win32'));
 });
 
+ipcMain.on('desktop:request-displays', event => {
+  if (isOurRenderer(event)) sendDisplays();
+});
+
 ipcMain.on('desktop:quit', event => {
   if (isOurRenderer(event)) app.quit();
 });
@@ -249,7 +279,7 @@ if (!app.requestSingleInstanceLock()) {
     tray.setToolTip(`${appLabel} · Ctrl/⌘ + Shift + M`);
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: '메뉴 열기 / 접기', click: toggleMenu },
-      { label: '기본 화면에 맞추기', click: fitWorkArea },
+      { label: '전체 모니터에 맞추기', click: fitWorkArea },
       { type: 'separator' },
       { label: `${appLabel} 종료`, click: () => app.quit() },
     ]));

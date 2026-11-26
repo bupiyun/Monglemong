@@ -238,6 +238,55 @@ test('game sync and actions serialize revisions, and caller fields cannot replac
   assert.equal(actions[1].width, 800);
 });
 
+test('multi-display presence copies only bounded controls and never forwards character progress', async () => {
+  const run = browserHarness(); await run.client.login();
+  run.respond(() => json({ revision: 1, game: { gold: 120 }, newCharacters: [] }));
+  const displays = [
+    { id: 'primary', x: 1920, y: 0, width: 1920, height: 1040, floorY: 1040, scaleFactor: 2 },
+    { id: 'left', x: 0, y: 0, width: 1920, height: 1040, floorY: 1040 },
+  ];
+  await run.client.syncGame({ width: 3840, displays, paused: false, stats: { kills: 900 }, characters: [
+    { characterId: 'cafemong', x: 500, displayId: 'left', elevated: true, paused: false, hp: 9999 },
+    { characterId: 'custom_friend', displayId: 'primary', elevated: false, paused: true, level: 50 },
+  ] });
+  const body = run.calls.at(-1).body;
+  assert.equal(body.width, 3840); assert.equal(body.stats, undefined);
+  assert.equal(body.displays[0].scaleFactor, undefined);
+  assert.deepEqual(body.characters, [
+    { characterId: 'cafemong', x: 500, displayId: 'left', elevated: true, paused: false },
+    { characterId: 'custom_friend', displayId: 'primary', elevated: false, paused: true },
+  ]);
+  const requestCount = run.calls.length;
+  for (const invalid of [
+    { width: 65537 }, { displays: Array(33).fill(displays[0]) }, { displays: [] },
+    { characters: Array(7).fill({ characterId: 'cafemong' }) }, { characters: [{ characterId: 'cafemong', x: Infinity }] },
+    { characters: [{ characterId: 'cafemong', displayId: 'x'.repeat(81) }] },
+  ]) await assert.rejects(run.client.syncGame(invalid), error => error.code === 'INVALID_PRESENCE');
+  assert.equal(run.calls.length, requestCount, 'invalid presence never reaches either transport');
+});
+
+test('a presence conflict exposes the canonical roster and updates the revision for the next corrected request', async () => {
+  const run = browserHarness(); await run.client.login();
+  let conflict = true;
+  run.respond((path, body) => {
+    if (conflict) return json({ error: { code: 'presence_conflict', message: '다른 기기에서 동료를 보관했어요.' },
+      revision: 3, game: { deployedCharacterIds: ['cafemong'] }, newCharacters: [] }, 409);
+    if (path.endsWith('/action')) assert.equal(body.revision, 4);
+    else assert.deepEqual(body.characters.map(character => character.characterId), ['cafemong']);
+    return json({ revision: path.endsWith('/action') ? 5 : 4, game: { deployedCharacterIds: ['cafemong'] }, newCharacters: [] });
+  });
+  await assert.rejects(run.client.syncGame({ characters: [{ characterId: 'cafemong' }, { characterId: 'custom_recalled' }] }), error => {
+    assert.equal(error.code, 'presence_conflict');
+    assert.deepEqual(error.data.game.deployedCharacterIds, ['cafemong']);
+    return true;
+  });
+  assert.equal(run.client.revision, 3);
+  conflict = false;
+  await run.client.syncGame({ characters: [{ characterId: 'cafemong' }] });
+  await run.client.gameAction('pet', { characterId: 'cafemong' });
+  assert.equal(run.client.revision, 5);
+});
+
 test('an action without a revision synchronizes first; conflicts surface canonical state without retrying a spend', async () => {
   const run = browserHarness();
   await run.client.login();

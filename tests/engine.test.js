@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CORE_TYPES, CHARACTER_TYPES, FOOD_GROUPS, TASTES, FOODS, STAT_FIELDS, ANIMATION_KEYS, SPRITE_SHEET, validateCustomDefinition, createCustomCharacter, updateCustomCharacter, deleteCustomCharacter, createGame, stepGame, deployCore, buyCore, petCharacter, feedCharacter, claimDaily, setCommand, serializeGame, selectCharacter, getNextCompanion, ITEM_TYPES, MONSTER_DROPS, MAX_ITEM_STACK, getCharacterBounds, setCharacterScale, setWindowWalking } from '../src/engine.js';
+import { CORE_TYPES, CHARACTER_TYPES, FOOD_GROUPS, TASTES, FOODS, STAT_FIELDS, ANIMATION_KEYS, SPRITE_SHEET, validateCustomDefinition, createCustomCharacter, updateCustomCharacter, deleteCustomCharacter, createGame, stepGame, deployCore, buyCore, petCharacter, feedCharacter, claimDaily, setCommand, serializeGame, selectCharacter, getNextCompanion, ITEM_TYPES, MONSTER_DROPS, MAX_ITEM_STACK, getCharacterBounds, setCharacterScale, setWindowWalking, setCharacterDeployed } from '../src/engine.js';
 
 function advance(state, seconds, width = 1280) {
   for (let time = 0; time < seconds; time += 0.1) stepGame(state, 0.1, width, () => 0.5);
@@ -234,7 +234,7 @@ test('v1 migration preserves progression and active dungeon while replacing the 
     portals: [{ id: 'p40', coreId: 'grove', x: 500, remaining: 1, total: 3, defeated: 1, spawnIn: 2 }],
     monsters: [{ id: 'm41', portalId: 'p40', type: 'grove', x: 520, hp: 7, cooldown: 1 }],
   });
-  assert.equal(state.version, 3);
+  assert.equal(state.version, 4);
   assert.equal(state.character.id, 'cafemong');
   for (const [key, value] of Object.entries({ level: 4, hp: 61, xp: 17, x: 678, hunger: 23, mood: 47, bond: 11, command: 'rest' })) assert.equal(state.character[key], value);
   assert.equal(state.character.maxHp, 160);
@@ -261,20 +261,20 @@ function customInput(overrides = {}) {
   };
 }
 
-test('swapping between base and custom companions keeps independent progress across reloads', () => {
+test('focusing base and custom companions keeps independent positions and progress across reloads', () => {
   const state = createGame({ character: { level: 4, hp: 61, xp: 17, mana: 9, hunger: 30, mood: 40, bond: 11 } });
   assert.equal(createCustomCharacter(state, customInput()).ok, true);
   state.character.x = 600;
   petCharacter(state);
   const base = state.character;
   assert.equal(selectCharacter(state, CUSTOM_ID).ok, true);
-  assert.equal(state.character.x, 600);
+  assert.equal(state.character.x, 700);
   assert.equal(state.character.level, 1);
   Object.assign(state.character, { hp: 50, mana: 10, hunger: 70, xp: 5, x: 750 });
   const custom = state.character;
   assert.equal(selectCharacter(state, 'cafemong').ok, true);
   assert.equal(state.character, base);
-  assert.equal(state.character.x, 750);
+  assert.equal(state.character.x, 600);
   assert.equal(state.character.hp, 61);
   assert.equal(state.character.mana, 9);
   assert.equal(state.character.level, 4);
@@ -295,18 +295,22 @@ test('swapping between base and custom companions keeps independent progress acr
   assert.equal(activeRestored.character.hp, 50);
 });
 
-test('a companion cannot be swapped during active combat but can after resting', () => {
+test('focus can change during combat while every deployed companion keeps its command and cooldowns', () => {
   const state = createGame();
   createCustomCharacter(state, customInput());
   setCommand(state, 'rest');
   deployCore(state, 'grove', 300);
   advance(state, 2);
   setCommand(state, 'fight');
-  assert.equal(selectCharacter(state, CUSTOM_ID).ok, false);
-  assert.equal(state.character.id, 'cafemong');
-  setCommand(state, 'rest');
+  const base = state.character;
+  base.cooldowns.attack = 1.3;
   assert.equal(selectCharacter(state, CUSTOM_ID).ok, true);
   assert.equal(state.character.id, CUSTOM_ID);
+  assert.equal(base.command, 'fight');
+  assert.equal(base.cooldowns.attack, 1.3);
+  assert.equal(selectCharacter(state, 'cafemong').ok, true);
+  assert.equal(state.character, base);
+  assert.equal(base.cooldowns.attack, 1.3);
   assert.equal(state.monsters.length, 1);
 });
 
@@ -494,7 +498,7 @@ test('custom progression persists, derived stats ignore forged values, invalid d
   Object.assign(state.character, { hp: 53, mana: 9, hunger: 42, mood: 37, bond: 12, xp: 17 });
   petCharacter(state);
   const payload = JSON.parse(serializeGame(state));
-  assert.equal(payload.version, 3);
+  assert.equal(payload.version, 4);
   assert.equal(payload.customDefinitions[0].sheetId, CUSTOM_ID);
   assert.equal(JSON.stringify(payload).includes('data:image'), false);
   assert.equal('animationState' in payload.character, false);
@@ -555,7 +559,7 @@ test('v2 active prototype progress migrates into Cafemong and other prototypes d
     version: 2, stats: { clears: 12 }, activeCharacterId: 'bomi', gold: 345,
     characters: [{ id: 'lumi', level: 4, hp: 54, xp: 8 }, { id: 'bomi', level: 5, hp: 77, mana: 12, xp: 21, cooldowns: { pet: 2 } }, { id: 'sol', level: 9 }],
   });
-  assert.equal(state.version, 3);
+  assert.equal(state.version, 4);
   assert.deepEqual(state.customDefinitions, []);
   assert.deepEqual(state.characters.map(c => c.id), ['cafemong']);
   assert.equal(state.activeCharacterId, 'cafemong');
@@ -684,6 +688,8 @@ test('minimum-health custom heroes preserve knockout recovery across an immediat
     const state = createGame();
     createCustomCharacter(state, input);
     selectCharacter(state, CUSTOM_ID);
+    setCharacterDeployed(state, 'cafemong', false);
+    state.character.x = 280;
     state.monsters.push({ id: 'm901', portalId: 'p901', type: 'grove', name: '연습 상대', x: 310, hp: 1000, maxHp: 1000, attack: 100, level: 5, defense: 0, resistance: 0, cooldown: 0, facing: -1 });
     setCommand(state, 'fight');
     stepGame(state, 0.1);
@@ -850,18 +856,17 @@ test('deleting an active custom companion during combat falls back to Cafemong w
   setCommand(state, 'rest'); advance(state, 2);
   setCommand(state, 'fight');
   const world = JSON.stringify({ gold: state.gold, inventory: state.inventory, stats: state.stats, portals: state.portals, monsters: state.monsters, elapsed: state.elapsed });
-  assert.equal(selectCharacter(state, 'cafemong').ok, false, 'Ordinary combat switching is still blocked');
+  const baseBeforeDelete = structuredClone(base);
   state.effects.push({ id: 'e999', x: 600, text: 'old attack', kind: 'damage', life: 1 });
   const deleted = deleteCustomCharacter(state, CUSTOM_ID);
   assert.equal(deleted.ok, true);
   assert.equal(deleted.activeCharacterId, 'cafemong');
   assert.equal(state.character, base);
   assert.equal(state.cooldowns, base.cooldowns);
-  assert.equal(base.x, 600); assert.equal(base.facing, -1);
-  assert.equal(base.hp, 67); assert.equal(base.mana, 11); assert.equal(base.xp, 13); assert.equal(base.bond, 4);
-  assert.equal(state.wanderTarget, 600);
-  assert.equal(base.action, 'rest'); assert.equal(base.animationState, 'doze'); assert.equal(base.animationTime, 0);
-  assert.deepEqual(state.effects, []);
+  assert.deepEqual(base, baseBeforeDelete, 'The existing companion keeps its own position, recovery and animation');
+  assert.equal(state.wanderTarget, base.wanderTarget);
+  assert.deepEqual(state.deployedCharacterIds, ['cafemong']);
+  assert.equal(state.effects.length, 1, 'Removing an actor does not erase the shared world effects');
   assert.deepEqual(state.characters.map(item => item.id), ['cafemong']);
   assert.deepEqual(state.customDefinitions, []);
   assert.equal(JSON.stringify({ gold: state.gold, inventory: state.inventory, stats: state.stats, portals: state.portals, monsters: state.monsters, elapsed: state.elapsed }), world);
