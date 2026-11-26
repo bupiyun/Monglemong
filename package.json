@@ -1,0 +1,98 @@
+{
+  "name": "monglemong",
+  "version": "0.9.2",
+  "description": "몽글몽 — 바탕화면에서 함께 자라는 작은 모험",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "start": "node scripts/start-client.mjs user",
+    "preview": "node scripts/serve.mjs",
+    "test": "node --test tests/engine.test.js",
+    "test:ui": "node tests/ui.mjs",
+    "dist:win": "node scripts/build-windows.mjs user",
+    "dist:linux": "node scripts/prepare-client.mjs user && electron-builder --projectDir build-clients/user --linux AppImage",
+    "test:roster": "node tests/roster-ui.mjs",
+    "setup:electron": "node scripts/ensure-electron.mjs",
+    "test:setup": "node --test tests/electron-setup.test.js",
+    "test:installer": "node --test tests/installer-config.test.js",
+    "verify:win": "node scripts/verify-windows-package.mjs --flavor user",
+    "test:sprites": "node --test tests/sprites.test.js",
+    "test:storage": "node tests/sprite-storage.mjs",
+    "check:assets": "node scripts/check-base-assets.mjs",
+    "test:assets": "node --test tests/base-assets.test.js",
+    "test:scale-loot": "node tests/scale-loot-ui.mjs",
+    "test:surfaces": "node --test tests/desktop-surfaces.test.js tests/window-surfaces.test.js",
+    "test:surfaces-ui": "node tests/desktop-surfaces-ui.mjs",
+    "prepare:user": "node scripts/prepare-client.mjs user",
+    "dist:win:user": "node scripts/build-windows.mjs user",
+    "verify:win:user": "node scripts/verify-windows-package.mjs --flavor user",
+    "test:service-ui": "node tests/service-ui.mjs",
+    "test:all": "node --test tests/*.test.js",
+    "check:public": "node scripts/check-public-source.mjs",
+    "hooks:install": "node scripts/install-git-hooks.mjs",
+    "test:account": "node --test tests/account-client.test.js",
+    "prestart": "npm run check:public -- --worktree",
+    "predist:win": "npm run check:public -- --worktree",
+    "predist:win:user": "npm run check:public -- --worktree"
+  },
+  "build": {
+    "appId": "studio.mori.desktop",
+    "productName": "MongleMong",
+    "files": [
+      "index.html",
+      "src/**",
+      "assets/**",
+      "electron/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "signExecutable": false,
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Game"
+    },
+    "asar": true,
+    "npmRebuild": false,
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "몽글몽",
+      "uninstallDisplayName": "몽글몽",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true,
+      "artifactName": "MongleMong-Setup-${version}-${arch}.${ext}",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerLanguages": [
+        "ko_KR"
+      ],
+      "language": "1042",
+      "displayLanguageSelector": false
+    },
+    "publish": []
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "electron": "^45.4.1",
+    "electron-builder": "26.18.0"
+  }
+}

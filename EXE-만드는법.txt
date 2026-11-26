@@ -1,0 +1,105 @@
+﻿몽글몽 (MongleMong) 유저용 소스에서 Windows EXE 만들기
+게임 버전: 0.9.2
+
+이 GitHub 소스는 유저용 클라이언트 전용입니다.
+관리자용과 서버 소스는 별도 비공개 전달본에서 관리합니다.
+소스와 빌드 도우미를 제공하며 EXE는 사용자의 Windows PC에서 만듭니다.
+
+1. 처음 한 번: Node.js 설치
+   https://nodejs.org 에서 Windows용 Node.js 24 LTS를 설치하세요.
+   npm도 함께 설치됩니다. 설치 후 터미널을 다시 여세요.
+   설치 완료된 게임을 플레이하는 PC에는 Node.js가 필요하지 않습니다.
+
+2. 소스를 로컬 폴더에 완전히 압축 해제
+   예: C:\Games\MongleMong
+   package.json, package-lock.json, build-windows.cmd가 함께 보여야 합니다.
+   ZIP 내부에서 바로 실행하지 마세요.
+   카페몽 원본은 assets\characters\cafemong.png에 포함되어 있습니다.
+   원본 1536 × 2400 PNG를 다시 임포트할 필요가 없습니다.
+
+3. 온라인 서비스 주소 설정 (온라인 기능을 사용할 때)
+   별도로 준비한 서비스의 공개 주소를 운영자에게 확인합니다.
+   클라이언트에는 API 원점만 넣고 실제 운영 자격 증명은 넣지 않습니다.
+   PowerShell에서 소스 폴더를 열고 실제 주소로 바꿔 실행하세요.
+
+   $env:MONGLEMONG_API_URL = 'https://<서비스-도메인>'
+   .\build-windows.cmd
+
+   개발 PC의 로컬 서비스에만 http://localhost:8787을 사용할 수 있습니다.
+   주소를 지정하지 않으면 게스트용으로 준비됩니다.
+   운영 서비스가 아직 없다면 게스트 빌드부터 사용할 수 있습니다.
+
+4. 유저용 설치 파일 제작
+   build-windows.cmd를 실행합니다.
+   도우미가 소스·기본 리소스 검사, 의존성 설치, 유저용 소스 준비,
+   Windows x64 설치 파일 제작과 결과 검증을 진행합니다.
+   첫 빌드는 다운로드 시간이 필요하며 인터넷 연결이 필요합니다.
+   성공하면 결과 폴더가 열립니다.
+
+   release\user\MongleMong-Setup-0.9.2-x64.exe
+
+   다른 사람에게는 이 Setup 설치 파일 하나를 전달하세요.
+   win-unpacked 안의 실행 파일만 복사하면 런타임이 빠집니다.
+   관리자·서버 소스와 비공개 ZIP은 공개 파일에 함께 넣지 않습니다.
+   이 소스에서 관리자용 빌드나 미리보기를 요청하면 오류로 중단합니다.
+
+5. 게임 설치와 실행
+   실행 중인 게임을 종료한 뒤 Setup 설치 파일을 실행하세요.
+   한 번 설치하면 바탕화면·시작 메뉴의 몽글몽 아이콘으로 CMD 창 없이 실행합니다.
+   메뉴 단축키는 Ctrl+Shift+M입니다.
+   빌드 도우미를 실행하는 동안에는 빌드용 명령창이 표시됩니다.
+   현재 설정은 코드 서명 없는 Windows x64 설치 파일입니다.
+
+터미널에서 직접 만들기 (package.json이 있는 폴더에서)
+   npm.cmd ci --include=dev
+   npm.cmd run dist:win:user
+   npm.cmd run verify:win:user
+
+EXE 없이 런타임 소스만 준비하기
+   npm.cmd run prepare:user
+   결과: build-clients\user
+
+소스를 바로 실행해 개발하기
+   start-windows.cmd 또는 npm.cmd start
+   브라우저 미리보기: npm.cmd run preview
+   온라인 주소는 실행 전에도 MONGLEMONG_API_URL로 지정합니다.
+   브라우저 미리보기는 운영자가 해당 원점을 허용한 서비스에 연결해야 합니다.
+
+GitHub에 소스를 올리기 전
+   clone마다 npm.cmd run hooks:install을 실행해 pre-push 검사를 설치합니다.
+   올릴 유저 파일을 git add로 선택한 뒤 npm.cmd run check:public을 실행합니다.
+   Git 없는 소스 ZIP은 npm.cmd run check:public -- --worktree로 확인합니다.
+   자세한 절차: docs\PUBLIC-WORKFLOW.md
+   생성 폴더·release·node_modules·실제 환경변수·DB는 Git에 올리지 않습니다.
+
+다음 소스를 받았을 때와 저장 위치
+   새 소스를 새 폴더에 풀고 서비스 주소를 지정한 뒤 같은 도우미로 제작하세요.
+   기기 저장: %APPDATA%\mori-desktop-rpg
+   앱 ID studio.mori.desktop, 저장 키 mori.game.v1,
+   이미지 DB mori-sprite-sheets는 호환성을 위해 유지합니다.
+   기존 게스트 진행과 이전에 제작한 동료는 기기에 보존됩니다.
+   처음 Google 로그인하면 새 온라인 진행도를 만들고 게스트 저장을 가져오지 않습니다.
+   로그아웃하면 기기의 게스트 저장으로 돌아갑니다.
+   온라인 진행은 같은 계정으로 다른 기기에서 이어갈 수 있습니다.
+   온라인 플레이는 서비스 연결이 필요하고 접속하지 않은 동안 성장하지 않습니다.
+
+문제가 생겼을 때
+   - node/npm 없음: Node.js 설치 후 터미널을 다시 여세요.
+   - Electron 실행 파일 없음: npm.cmd run setup:electron을 실행하세요.
+   - 다운로드나 검증 실패: 표시된 오류를 해결한 뒤 다시 제작하세요.
+   - npm warn/deprecated만 있음: 이후 단계의 최종 성공/실패 메시지를 확인하세요.
+   - npm audit fix --force는 Electron 실행 파일 설치 명령이 아닙니다.
+   - 온라인 연결 필요: 서비스 주소를 지정하고 다시 실행·빌드하세요.
+   - Google 로그인 실패: 서비스 연결 상태와 운영자 설정을 확인하세요.
+   - 오류 공유 시 환경변수 파일이나 인증 토큰을 보내지 마세요.
+
+검증 범위와 이전 이력
+   자동 소스·패키지 검사는 실제 Windows 설치·실행 검증을 대체하지 않습니다.
+   실제 Google 로그인·Windows 창 인식은 대상 환경에서 확인해야 합니다.
+   2026-11-26 사용자 요청에 따라 유저용 소스로 새 Git 이력을 시작했습니다.
+   기존 v0.8.0, v0.9.0, v0.9.1 태그는 제거하고 v0.9.2부터 관리합니다.
+   이전 clone의 수정 파일은 먼저 보관한 뒤 새 폴더에 clone하세요.
+   기존 브랜치·태그·.git·Git bundle을 새 공개 이력에 합치거나 다시 올리지 마세요.
+   이전 SHA 캐시나 다른 사람이 보관한 clone·다운로드까지 삭제되지는 않습니다.
+   자세한 이전 절차와 확인 범위는 docs\PUBLIC-WORKFLOW.md를 참고하세요.
+   게임 사용법과 저장 범위는 README.md를 참고하세요.

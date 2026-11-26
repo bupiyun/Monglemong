@@ -1,0 +1,47 @@
+name: User source checks
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: user-source-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Check user source across the full reachable history
+        env:
+          CHECK_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CHECK_HEAD: ${{ github.sha }}
+        shell: bash
+        run: |
+          base="${CHECK_BASE:-0000000000000000000000000000000000000000}"
+          node scripts/check-public-source.mjs --range "$base" "$CHECK_HEAD"
+      # This workflow validates user sources only. No private server, EXE,
+      # release upload or administrator build runs in this repository.
+      - name: Install locked client dependencies
+        run: npm ci --include=dev --ignore-scripts
+      - name: Validate bundled character artwork
+        run: npm run check:assets
+      - name: Run user source unit tests
+        run: node --test tests/*.test.js
+      - name: Prepare user source without building an executable
+        run: npm run prepare:user

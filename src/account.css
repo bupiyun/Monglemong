@@ -1,0 +1,13 @@
+.account-panel{padding:16px 0;border-bottom:1px solid #ebe5ee;margin-bottom:12px;color:#776780}
+.account-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.account-heading h3{font-size:15px;color:#705b7e;margin:0 0 5px}.account-heading p{font-size:11px;line-height:1.6;margin:0;color:#9b8aa4}
+.account-badge{flex-shrink:0;font-size:10px;border:1px solid #e2d9e9;background:#f7f2fa;border-radius:12px;padding:5px 9px}
+.account-profile{display:grid;gap:5px;background:#f7f5fa;border:1px solid #ebe3f1;border-radius:10px;padding:12px;margin-top:12px;overflow-wrap:anywhere}
+.account-profile strong{font-size:13px}.account-profile span{font-size:11px;color:#96839f}
+.account-status,.account-note{font-size:11px;line-height:1.7;margin:12px 0}.account-note{font-size:10px;color:#a18fa9}
+.account-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.account-actions>button{font-size:11px;min-height:36px;padding:9px 13px}
+.account-panel button:disabled{opacity:.5;cursor:wait}.account-error{font-size:11px;color:#a34f67;line-height:1.6;background:#fff0f3;border-radius:8px;padding:10px;overflow-wrap:anywhere}
+.account-delete{font-size:10px;color:#aa7d86;text-decoration:underline;padding:6px 0}.account-delete-panel{border:1px solid #eed7dc;background:#fff8f8;border-radius:10px;padding:12px;margin-top:10px}
+.account-delete-panel>strong{font-size:12px;color:#965569}.account-delete-panel>p{font-size:11px;line-height:1.7;color:#977783}
+.account-panel [hidden]{display:none!important}
+@media(max-width:480px){.account-heading{flex-wrap:wrap}.account-actions>button{flex:1}.account-panel{padding-top:12px}}

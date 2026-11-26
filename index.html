@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'">
+  <title>몽글몽 · 나의 작은 바탕화면 모험</title>
+  <link rel="icon" href="assets/core-grove.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="src/styles.css">
+  <link rel="stylesheet" href="src/companions.css">
+  <link rel="stylesheet" href="src/warehouse.css">
+  <link rel="stylesheet" href="src/account.css">
+</head>
+<body>
+  <div id="scenery" aria-hidden="true"><div class="sun-glow"></div><div class="motes"><i></i><i></i><i></i><i></i><i></i></div></div>
+  <header id="topbar" class="interactive">
+    <a class="brand" href="#" aria-label="몽글몽 홈"><span class="brand-mark">m<span>✦</span></span><div>몽글몽<small>MongleMong</small></div></a>
+    <div class="top-actions"><span class="version-tag">EARLY ACCESS <b>0.9.2</b></span><span class="divider"></span><button id="scene-toggle" class="icon-button" aria-label="배경 전환" title="배경 전환"></button><button id="pause-button" class="icon-button" aria-label="일시 정지" title="일시 정지"></button><button id="help-button" class="icon-button" aria-label="플레이 방법" title="플레이 방법"></button></div>
+  </header>
+  <main id="world" aria-label="카페몽의 모험 공간">
+    <div class="place-label" aria-hidden="true"><span>THE LITTLE MEADOW</span><h1>카페몽의 작은 초원</h1><p><span class="weather-spark">✧</span> 맑음 · 모험하기 좋은 날</p></div>
+    <section id="companion-card" class="companion-card interactive" aria-label="캐릭터 상태">
+      <div class="section-eyebrow">MY COMPANION <span class="tiny-spark">✦</span></div>
+      <div class="companion-title"><div class="portrait"><img id="active-portrait" src="assets/character-placeholder.svg" alt="고양이 카페몽"></div><div><div class="name-line"><h2 id="active-name">카페몽</h2><span id="level-badge" class="level-badge">Lv. 1</span></div><p id="active-title">카페에서 태어난 고양이형 몽글몬</p><div id="bond-label" class="bond-label">♡ 우리의 첫 만남</div></div></div>
+      <div class="stat-line"><span>체력</span><span id="hp-text"></span></div><div class="meter health"><i id="hp-bar"></i></div>
+      <div class="stat-line"><span>마나</span><span id="mana-text"></span></div><div class="meter mana"><i id="mana-bar"></i></div>
+      <div class="stat-line"><span>경험치</span><span id="xp-text"></span></div><div class="meter xp"><i id="xp-bar"></i></div>
+      <div class="needs"><span><i class="need-icon">◒</i> 포만감 <b id="hunger-text"></b></span><span><i class="need-icon">♡</i> 행복 <b id="mood-text"></b></span></div>
+      <div class="command-switch" aria-label="카페몽 행동"><button data-command="wander" class="active">산책</button><button data-command="fight">모험</button><button data-command="rest">휴식</button></div>
+      <button id="active-detail-button" class="profile-link">성격 · 취향 · 능력치 보기 <span>+</span></button>
+    </section>
+    <aside id="field-note" class="field-note interactive"><span class="note-icon">✧</span><div><strong id="quest-title">작은 모험의 시작</strong><p id="quest-copy">가방 속 던전 코어를 초원에 놓아 보세요.<br>카페몽의 첫 모험이 시작됩니다.</p><button id="guide-link">어떻게 플레이하나요?</button></div></aside>
+    <div id="drop-zone" aria-label="던전 코어 배치 영역"><span class="drop-plus">+</span><span>이곳에 던전 코어를 놓아 주세요</span></div>
+    <div id="portals"></div><div id="monsters"></div><div id="effects" aria-hidden="true"></div>
+    <div id="character" class="character interactive" role="button" tabindex="0" aria-label="카페몽과 상호작용. 드래그하여 이동할 수 있습니다."><div id="speech" class="speech"></div><div class="character-shadow"></div><img id="character-sprite" src="assets/character-placeholder.svg" draggable="false" alt="카페몽"><div class="character-name"><span id="world-level">Lv.1</span><span id="world-name">카페몽</span><i></i></div></div>
+    <div id="character-menu" class="character-menu interactive" hidden><div class="popover-heading"><span id="character-menu-title">카페몽과 함께</span><button class="close-small" id="close-character" aria-label="캐릭터 메뉴 닫기">×</button></div><button id="pet-action">♡ <span>쓰다듬기</span></button><button id="talk-action">◌ <span>말 걸기</span></button><button id="feed-action">◒ <span>간식 주기</span><small>10 G</small></button><button id="adventure-action">⚔ <span>모험 보내기</span></button></div>
+    <div id="pause-overlay" hidden><span>잠깐 쉬어 가요</span><p>카페몽과 초원의 시간이 멈췄어요.</p><button id="resume-button">계속하기</button></div>
+  </main>
+  <section id="dock" class="dock interactive" aria-label="모험 메뉴">
+    <div class="window-handle" id="dock-handle"><div><span class="window-flower">✿</span><strong>모험 가방</strong></div><span class="drag-dots" aria-hidden="true">⠿</span><button id="minimize-button" class="icon-button" aria-label="메뉴 최소화" title="메뉴 최소화">−</button></div>
+    <div class="wallet-row"><span>작은 준비, 새로운 모험</span><span class="wallet"><i>G</i><b id="gold-text">120</b></span></div>
+    <nav class="tabs" aria-label="가방 탭"><button data-tab="cores" class="active">코어 <span id="core-count">2</span></button><button data-tab="companions">동료 <span id="companion-count">1</span></button><button data-tab="inventory">창고 <span id="item-count">0</span></button><button data-tab="care">돌보기</button><button data-tab="journal">기록</button></nav>
+    <div id="tab-cores" class="tab-content"><div class="tab-intro"><h3>어디로 떠나 볼까요?</h3><p>코어를 초원으로 끌어 놓으면 던전이 열려요.</p></div><div id="core-list"></div><div class="placement-hint"><span>⌘</span><p>끌어 놓거나, 코어를 선택한 뒤<br>초원의 원하는 위치를 눌러 주세요.</p></div><button id="shop-button" class="secondary-button full"><span>+</span> 코어 상점 둘러보기</button></div>
+    <div id="tab-companions" class="tab-content" hidden>
+      <div class="tab-intro roster-heading"><div><h3>우리의 작은 동료들</h3><p>다른 성격, 같은 모험.</p></div><span id="roster-count">1 / 1</span></div>
+      <p class="roster-help">카드를 눌러 취향과 능력치를 확인해 보세요.</p>
+      <div id="roster-scroll" tabindex="0" role="region" aria-label="획득한 동료 목록. 세로 스크롤 가능"><div id="roster-grid" role="list" aria-label="획득한 캐릭터"></div></div>
+      <div class="recruit-note"><span aria-hidden="true">✧</span><div><strong id="next-companion-title">다음 만남을 기다리며</strong><p id="next-companion-copy"></p><div class="meter recruit"><i id="recruit-progress"></i></div></div></div>
+      <p class="roster-footnote">획득한 동료만 보여요. 현재 동료 한 명과 모험하며,<br>성장과 유대감은 캐릭터마다 따로 저장돼요.</p>
+    </div>
+    <div id="tab-inventory" class="tab-content" hidden>
+      <div class="tab-intro inventory-heading"><div><h3>모험에서 모은 보물</h3><p>몬스터가 남긴 아이템을 차곡차곡 모아요.</p></div><span class="inventory-symbol" aria-hidden="true">◇</span></div>
+      <p id="inventory-summary" class="inventory-summary" role="status">보관 중인 아이템이 없어요.</p>
+      <div id="inventory-empty" class="inventory-empty"><span aria-hidden="true">✧</span><strong>첫 번째 보물을 기다려요</strong><p>던전을 열고 몬스터를 사냥해 보세요.<br>드롭된 아이템은 자동으로 창고에 들어와요.</p></div>
+      <div id="item-grid" class="item-grid" role="list" aria-label="보관 중인 아이템"></div>
+      <p class="inventory-note">아이템을 누르면 설명과 획득처를 볼 수 있어요.<br>같은 아이템은 수량이 합쳐져 자동 저장돼요.</p>
+    </div>
+    <div id="tab-care" class="tab-content" hidden><div class="tab-intro"><h3>함께하는 시간이 쌓여요</h3><p>작은 관심이 동료에게는 큰 힘이 돼요.</p></div><div class="care-illustration"><img id="care-portrait" src="assets/character-placeholder.svg" alt="쉬고 있는 카페몽"><span id="care-caption">카페몽은 당신 곁이 좋아요.</span></div><button id="care-pet" class="care-row"><span class="care-symbol pink">♡</span><span><strong>다정하게 쓰다듬기</strong><small>행복과 유대감이 올라요</small></span><span>무료</span></button><div class="food-picker"><label for="food-select">오늘의 식사</label><select id="food-select" aria-label="먹일 음식"></select><p id="food-preview"></p><p id="food-affinity"></p></div><button id="care-feed" class="care-row"><span class="care-symbol yellow">◒</span><span><strong>선택한 음식 주기</strong><small>포만감과 체력을 채워요</small></span><span>10 G</span></button><button id="care-rest" class="care-row"><span class="care-symbol purple">☾</span><span><strong>포근하게 쉬기</strong><small>체력과 마나를 회복해요</small></span><span>무료</span></button><button id="daily-button" class="secondary-button full">✧ 오늘의 선물 받기</button></div>
+    <div id="tab-journal" class="tab-content" hidden><div class="tab-intro"><h3>우리의 모험 일지</h3><p>작은 순간도 소중한 기억이 되니까.</p></div><div class="journal-stats"><div><b id="kills-text">0</b><span>처치한 몬스터</span></div><div><b id="clears-text">0</b><span>완료한 던전</span></div></div><ol id="logs"></ol></div>
+    <footer class="dock-footer"><span><i></i> <span id="save-label">이 기기에 자동 저장</span></span><button id="settings-button" aria-label="설정"></button></footer>
+  </section>
+  <footer id="bottom-bar"><div class="world-status interactive"><span class="status-dot"></span><span id="activity-text">카페몽이 초원을 산책하고 있어요</span></div><span class="bottom-tip">작은 친구와 함께하는, 당신만의 하루</span><button id="launcher" class="launcher interactive" aria-label="모험 메뉴 열기 또는 닫기" aria-expanded="true"><span class="launcher-icon">✿</span><span>모험 메뉴</span><span id="launcher-chevron">⌄</span></button></footer>
+  <div id="placement-banner" class="interactive" hidden><span id="placement-text"></span><button id="cancel-placement">취소 <kbd>Esc</kbd></button></div>
+  <div id="drag-preview" hidden><img alt="배치할 던전 코어"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <dialog id="modal" class="interactive"><div class="modal-heading"><h2 id="modal-title"></h2><button id="close-modal" class="icon-button" aria-label="닫기">×</button></div><div id="modal-content"></div></dialog>
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>
