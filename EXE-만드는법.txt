@@ -1,5 +1,5 @@
 ﻿몽글몽 (MongleMong) 유저용 소스에서 Windows EXE 만들기
-게임 버전: 0.11.0
+게임 버전: 0.11.1
 
 이 GitHub 소스는 유저용 클라이언트 전용입니다.
 관리자용과 서버 소스는 별도 비공개 전달본에서 관리합니다.
@@ -36,7 +36,7 @@
    첫 빌드는 다운로드 시간이 필요하며 인터넷 연결이 필요합니다.
    성공하면 결과 폴더가 열립니다.
 
-   release\user\MongleMong-Setup-0.11.0-x64.exe
+   release\user\MongleMong-Setup-0.11.1-x64.exe
 
    다른 사람에게는 이 Setup 설치 파일 하나를 전달하세요.
    win-unpacked 안의 실행 파일만 복사하면 런타임이 빠집니다.
@@ -88,6 +88,8 @@ GitHub에 소스를 올리기 전
 문제가 생겼을 때
    - node/npm 없음: Node.js 설치 후 터미널을 다시 여세요.
    - Electron 실행 파일 없음: npm.cmd run setup:electron을 실행하세요.
+   - 0.11.0의 safeStorage.isEncryptionAvailable deprecated 경고는 설치 오류가 아닙니다.
+     0.11.1 소스에서 수정했으며 Electron 재설치나 저장 초기화는 필요하지 않습니다.
    - 다운로드나 검증 실패: 표시된 오류를 해결한 뒤 다시 제작하세요.
    - npm warn/deprecated만 있음: 이후 단계의 최종 성공/실패 메시지를 확인하세요.
    - npm audit fix --force는 Electron 실행 파일 설치 명령이 아닙니다.
@@ -109,5 +111,5 @@ GitHub에 소스를 올리기 전
 
 [업데이트 배포]
 설정 → 업데이트에서 새 버전 확인과 설치 파일 다운로드가 가능합니다.
-Windows에서 유저용 설치 파일을 만든 뒤 npm.cmd run prepare:update -- release/user/MongleMong-Setup-0.11.0-x64.exe 로 배포 자료를 준비하세요.
+Windows에서 유저용 설치 파일을 만든 뒤 npm.cmd run prepare:update -- release/user/MongleMong-Setup-0.11.1-x64.exe 로 배포 자료를 준비하세요.
 관리자 설치 파일은 공개 업데이트 폴더에 올리지 않습니다. 자동 설치 기능은 포함하지 않습니다.

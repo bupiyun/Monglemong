@@ -229,45 +229,244 @@ test('installer verification rejects server data and authoring files in user bui
   assert.doesNotThrow(() => assertRuntimeMembers(['src', 'src/app.js'], { approvedPaths: ['src/app.js'] }));
 });
 
+function encryptedFixture(value, legacy = false) {
+  return Buffer.from((legacy ? 'encrypted:' : 'encrypted-v2:') + Buffer.from(value).toString('base64'));
+}
+
 function encryption(available = true, backend = 'dpapi') {
+  const deprecatedCalls = [];
+  const deprecated = name => () => { deprecatedCalls.push(name); throw new Error(`Deprecated API: ${name}`); };
   return {
-    isEncryptionAvailable: () => available,
+    deprecatedCalls,
+    isEncryptionAvailable: deprecated('isEncryptionAvailable'),
+    encryptString: deprecated('encryptString'),
+    decryptString: deprecated('decryptString'),
+    isAsyncEncryptionAvailable: async () => available,
     getSelectedStorageBackend: () => backend,
-    encryptString: value => Buffer.from('encrypted:' + Buffer.from(value).toString('base64')),
-    decryptString: bytes => {
+    encryptStringAsync: async value => encryptedFixture(value),
+    decryptStringAsync: async bytes => {
       const value = bytes.toString();
-      if (!value.startsWith('encrypted:')) throw new Error('Invalid encrypted data');
-      return Buffer.from(value.slice(10), 'base64').toString();
+      const prefix = value.startsWith('encrypted-v2:') ? 'encrypted-v2:' : 'encrypted:';
+      if (!value.startsWith(prefix)) throw new Error('Invalid encrypted data');
+      return { result: Buffer.from(value.slice(prefix.length), 'base64').toString(), shouldReEncrypt: prefix === 'encrypted:' };
     },
   };
 }
 
-test('sessions persist encrypted, restore, switch accounts and remove on logout', t => {
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+test('sessions persist encrypted, restore, switch accounts and remove on logout using only async OS APIs', async t => {
   const file = join(temporary(t), 'account.bin');
   const safeStorage = encryption();
   const vault = createSessionVault({ file, safeStorage });
-  assert.equal(vault.has(), false);
-  assert.deepEqual(vault.set(token), { persistent: true });
+  assert.equal(await vault.has(), false);
+  assert.deepEqual(await vault.set(token), { persistent: true });
   assert.equal(readFileSync(file).includes(Buffer.from(token)), false);
-  assert.equal(createSessionVault({ file, safeStorage }).get(), token);
-  vault.set(otherToken);
-  assert.equal(createSessionVault({ file, safeStorage }).get(), otherToken);
-  vault.set(null);
-  assert.equal(vault.has(), false);
+  assert.equal(await createSessionVault({ file, safeStorage }).get(), token);
+  await vault.set(otherToken);
+  assert.equal(await createSessionVault({ file, safeStorage }).get(), otherToken);
+  await vault.set(null);
+  assert.equal(await vault.has(), false);
   assert.equal(existsSync(file), false);
   assert.throws(() => vault.set('Bearer bad\r\nHeader:value'));
+  assert.deepEqual(safeStorage.deprecatedCalls, []);
 });
 
-test('unavailable or plaintext OS storage keeps tokens in memory and removes stale disk sessions', t => {
+test('false, rejected or plaintext OS availability keeps tokens in memory and removes stale disk sessions', async t => {
   const file = join(temporary(t), 'account.bin');
-  for (const safeStorage of [encryption(false), encryption(true, 'basic_text')]) {
+  const rejected = { ...encryption(), isAsyncEncryptionAvailable: async () => { throw new Error('Keychain unavailable'); } };
+  for (const safeStorage of [encryption(false), encryption(true, 'basic_text'), rejected, {}]) {
+    let encryptionCalls = 0;
+    safeStorage.encryptStringAsync = async () => { encryptionCalls++; throw new Error('Must not encrypt'); };
     writeFileSync(file, 'old session');
     const vault = createSessionVault({ file, safeStorage });
-    assert.equal(vault.has(), false);
-    assert.deepEqual(vault.set(token), { persistent: false });
-    assert.equal(vault.get(), token);
+    assert.equal(await vault.has(), false);
+    assert.deepEqual(await vault.set(token), { persistent: false });
+    assert.equal(await vault.get(), token);
     assert.equal(existsSync(file), false);
+    assert.equal(encryptionCalls, 0, 'a Promise resolving false must not be treated as available');
+    assert.deepEqual(safeStorage.deprecatedCalls || [], []);
   }
+});
+
+test('legacy ciphertext restores from the async result object and rotates atomically when requested', async t => {
+  const file = join(temporary(t), 'account.bin');
+  const safeStorage = encryption();
+  writeFileSync(file, encryptedFixture(token, true));
+  assert.equal(await createSessionVault({ file, safeStorage }).get(), token);
+  assert.deepEqual(readFileSync(file), encryptedFixture(token));
+  assert.equal(existsSync(file + '.tmp'), false);
+  assert.equal(await createSessionVault({ file, safeStorage }).get(), token);
+  assert.deepEqual(safeStorage.deprecatedCalls, []);
+});
+
+test('a failed key-rotation rewrite preserves the previous encrypted session and cleans its temporary file', async t => {
+  const file = join(temporary(t), 'account.bin');
+  const original = encryptedFixture(token, true);
+  writeFileSync(file, original);
+  const io = { ...require('node:fs'), renameSync() { throw new Error('Rename denied'); } };
+  const vault = createSessionVault({ file, safeStorage: encryption(), io });
+  assert.equal(await vault.get(), token);
+  assert.deepEqual(readFileSync(file), original);
+  assert.equal(existsSync(file + '.tmp'), false);
+});
+
+test('corrupt, oversized, invalid and undecryptable session files fail closed without blocking later login', async t => {
+  const file = join(temporary(t), 'account.bin');
+  const scenarios = [
+    { bytes: Buffer.from('not encrypted'), safeStorage: encryption() },
+    { bytes: Buffer.alloc(8193), safeStorage: encryption() },
+    { bytes: encryptedFixture('invalid token'), safeStorage: encryption() },
+    { bytes: encryptedFixture(token), safeStorage: { ...encryption(), decryptStringAsync: async () => { throw new Error('Decrypt failed'); } } },
+    { bytes: encryptedFixture(token), safeStorage: { ...encryption(), decryptStringAsync: async () => token } },
+  ];
+  for (const { bytes, safeStorage } of scenarios) {
+    writeFileSync(file, bytes);
+    const vault = createSessionVault({ file, safeStorage });
+    assert.equal(await vault.get(), null);
+    assert.equal(existsSync(file), false);
+    assert.deepEqual(await vault.set(otherToken), { persistent: true });
+    assert.equal(await vault.get(), otherToken);
+    await vault.set(null);
+  }
+});
+
+test('logout queued during slow restoration cannot be undone by restored or rotated ciphertext', async t => {
+  const file = join(temporary(t), 'account.bin');
+  writeFileSync(file, encryptedFixture(token, true));
+  const started = deferred();
+  const release = deferred();
+  const safeStorage = encryption();
+  const decrypt = safeStorage.decryptStringAsync;
+  safeStorage.decryptStringAsync = async bytes => { started.resolve(); await release.promise; return decrypt(bytes); };
+  const vault = createSessionVault({ file, safeStorage });
+  const logout = vault.set(null);
+  const hasSession = vault.has();
+  await started.promise;
+  release.resolve();
+  assert.deepEqual(await logout, { persistent: false });
+  assert.equal(await hasSession, false);
+  assert.equal(await vault.get(), null);
+  assert.equal(existsSync(file), false);
+  assert.equal(existsSync(file + '.tmp'), false);
+});
+
+test('slow encryption serializes account switching and logout without restoring an earlier token', async t => {
+  const file = join(temporary(t), 'account.bin');
+  const started = deferred();
+  const release = deferred();
+  const encrypted = [];
+  const safeStorage = encryption();
+  safeStorage.encryptStringAsync = async value => {
+    encrypted.push(value);
+    if (encrypted.length === 1) { started.resolve(); await release.promise; }
+    return encryptedFixture(value);
+  };
+  const vault = createSessionVault({ file, safeStorage });
+  const first = vault.set(token);
+  await started.promise;
+  const second = vault.set(otherToken);
+  const logout = vault.set(null);
+  const finalToken = vault.get();
+  assert.deepEqual(encrypted, [token], 'later writes must wait for the first encryption');
+  release.resolve();
+  assert.deepEqual(await first, { persistent: true });
+  assert.deepEqual(await second, { persistent: true });
+  assert.deepEqual(await logout, { persistent: false });
+  assert.deepEqual(encrypted, [token, otherToken]);
+  assert.equal(await finalToken, null);
+  assert.equal(existsSync(file), false);
+  assert.equal(existsSync(file + '.tmp'), false);
+});
+
+test('encryption and disk-write failures remove the old account file and allow a later retry', async t => {
+  const file = join(temporary(t), 'account.bin');
+  for (const failure of ['encrypt', 'write', 'rename']) {
+    writeFileSync(file, encryptedFixture(token));
+    let failing = true;
+    const safeStorage = encryption();
+    safeStorage.encryptStringAsync = async value => {
+      if (failing && failure === 'encrypt') throw new Error('Encrypt failed');
+      return encryptedFixture(value);
+    };
+    const fs = require('node:fs');
+    const io = { ...fs,
+      writeFileSync(...args) { if (failing && failure === 'write') throw new Error('Write failed'); return fs.writeFileSync(...args); },
+      renameSync(...args) { if (failing && failure === 'rename') throw new Error('Rename failed'); return fs.renameSync(...args); },
+    };
+    const vault = createSessionVault({ file, safeStorage, io });
+    assert.equal(await vault.get(), token);
+    assert.deepEqual(await vault.set(otherToken), { persistent: false });
+    assert.equal(await vault.get(), otherToken, 'the new session remains usable in memory');
+    assert.equal(existsSync(file), false, 'the previous account must not return on restart');
+    assert.equal(existsSync(file + '.tmp'), false);
+    failing = false;
+    assert.deepEqual(await vault.set(otherToken), { persistent: true });
+    await vault.set(null);
+  }
+});
+
+test('failed session cleanup is reported without poisoning the queue for logout or retry', async t => {
+  const file = join(temporary(t), 'account.bin');
+  writeFileSync(file, encryptedFixture(token));
+  let denyRemoval = false;
+  const fs = require('node:fs');
+  const io = { ...fs, rmSync(target, ...args) {
+    if (denyRemoval && target === file) throw new Error('Remove denied');
+    return fs.rmSync(target, ...args);
+  } };
+  const vault = createSessionVault({ file, safeStorage: encryption(), io });
+  assert.equal(await vault.get(), token);
+  denyRemoval = true;
+  await assert.rejects(vault.set(otherToken), /이전 로그인 세션/);
+  assert.equal(await vault.get(), null);
+  denyRemoval = false;
+  await vault.set(otherToken);
+  denyRemoval = true;
+  await assert.rejects(vault.set(null), /지우지 못했어요/);
+  assert.equal(await vault.has(), false);
+  denyRemoval = false;
+  assert.deepEqual(await vault.set(null), { persistent: false });
+  assert.equal(existsSync(file), false);
+  assert.deepEqual(await vault.set(token), { persistent: true });
+});
+
+test('service requests await vault restoration and queued saves before attaching a bearer token', async t => {
+  const file = join(temporary(t), 'account.bin');
+  writeFileSync(file, encryptedFixture(token));
+  const restoreStarted = deferred();
+  const restoreRelease = deferred();
+  const saveStarted = deferred();
+  const saveRelease = deferred();
+  const safeStorage = encryption();
+  const decrypt = safeStorage.decryptStringAsync;
+  safeStorage.decryptStringAsync = async bytes => { restoreStarted.resolve(); await restoreRelease.promise; return decrypt(bytes); };
+  safeStorage.encryptStringAsync = async value => { saveStarted.resolve(); await saveRelease.promise; return encryptedFixture(value); };
+  const requests = [];
+  const vault = createSessionVault({ file, safeStorage });
+  const bridge = createServiceBridge({ config: { apiBaseUrl: 'https://game.example.com' }, vault,
+    fetchImpl: async (_url, options) => { requests.push(options.headers); return Response.json({ ok: true }); } });
+  const hasSession = bridge.getAccountSession();
+  const restoredRequest = bridge.serviceRequest({ method: 'GET', path: '/v1/me' });
+  await restoreStarted.promise;
+  assert.equal(requests.length, 0);
+  restoreRelease.resolve();
+  assert.equal(await hasSession, true);
+  await restoredRequest;
+  assert.equal(requests[0].Authorization, `Bearer ${token}`);
+  const save = bridge.setAccountSession(otherToken);
+  await saveStarted.promise;
+  const switchedRequest = bridge.serviceRequest({ method: 'GET', path: '/v1/me' });
+  assert.equal(requests.length, 1);
+  saveRelease.resolve();
+  await save;
+  await switchedRequest;
+  assert.equal(requests[1].Authorization, `Bearer ${otherToken}`);
+  assert.deepEqual(safeStorage.deprecatedCalls, []);
 });
 
 test('the transport rejects external paths, traversal and unsupported methods', () => {
