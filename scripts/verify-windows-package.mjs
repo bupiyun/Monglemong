@@ -29,6 +29,18 @@ export function assertRuntimeMembers(members, { flavor = 'user', approvedPaths }
   assert.ok(!members.some(name => /(^|\/)admin(?:[./_-]|$)/i.test(name)), 'User client must not include privileged authoring files');
 }
 
+/** Check runtime metadata that survives electron-builder's package cleanup. */
+export function assertPackagedManifest(manifest, source) {
+  // electron-builder removes build (including appId) before writing app.asar.
+  // Flavor is additionally checked in runtime-config and every runtime file is
+  // compared byte-for-byte with the prepared source below.
+  assert.equal(manifest.name, source.name, 'Packaged identity must match the prepared client');
+  assert.equal(manifest.version, source.version, 'Packaged version must match source');
+  assert.equal(source.main, 'electron/main.cjs', 'Prepared app must launch Electron directly');
+  assert.equal(manifest.main, source.main, 'Installed app must launch Electron directly');
+  assert.equal(manifest.type, source.type, 'Packaged module type must match source');
+}
+
 /** Inspect PE metadata without launching a Windows executable. */
 export function readPE(file) {
   const fd = openSync(file, 'r');
@@ -103,9 +115,7 @@ export async function verifyWindowsPackage({projectRoot=root,installer,appDirect
   const members = asar.listPackage(archive).map(name=>name.replaceAll('\\','/').replace(/^\//,''));
   assertRuntimeMembers(members, { flavor, approvedPaths: approved.paths.filter(name => ['index.html', 'package.json'].includes(name) || /^(src|assets|electron)\//.test(name)) });
   const manifest=JSON.parse(asar.extractFile(archive,'package.json').toString());
-  assert.equal(manifest.main,'electron/main.cjs','Installed app must launch Electron directly');
-  assert.equal(manifest.version,source.version,'Packaged version must match source');
-  assert.equal(manifest.build.appId, source.build.appId, 'Packaged build identity must match the user client');
+  assertPackagedManifest(manifest, source);
   const runtimeConfig = JSON.parse(asar.extractFile(archive, 'src/runtime-config.json').toString());
   assert.equal(runtimeConfig.flavor, flavor, 'Packaged client must be the user client');
   const required=[join(sourceRoot,'index.html'),...['src','assets','electron'].flatMap(folder=>filesUnder(join(sourceRoot,folder)))];

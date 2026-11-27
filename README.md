@@ -2,7 +2,7 @@
 
 바탕화면에서 고양이형 몽글몬 **카페몽**과 함께 성장하는 시메지 스타일 다마고치 RPG입니다. 여러 모니터의 Windows 작업 표시줄과 창 위를 걷는 동료들을 돌보고, 던전 코어를 배치해 전투·성장·아이템 수집을 즐길 수 있습니다.
 
-**현재 버전은 0.11.1입니다.** 이 저장소에는 **유저용 클라이언트 소스만** 관리합니다. 관리자 제작 도구와 서버 운영 소스는 별도 비공개 작업 공간에서 관리하며, 이 저장소의 빌드·자동 검사·배포 대상에 포함하지 않습니다. 분리 기준과 업로드 절차는 [유저 소스 관리 안내](docs/PUBLIC-WORKFLOW.md)에 있습니다.
+**현재 버전은 0.11.2입니다.** 이 저장소에는 **유저용 클라이언트 소스만** 관리합니다. 관리자 제작 도구와 서버 운영 소스는 별도 비공개 작업 공간에서 관리하며, 이 저장소의 빌드·자동 검사·배포 대상에 포함하지 않습니다. 분리 기준과 업로드 절차는 [유저 소스 관리 안내](docs/PUBLIC-WORKFLOW.md)에 있습니다.
 
 ## 소스를 받아 실행하기
 
@@ -33,13 +33,13 @@ npm.cmd run preview
 
 ## Windows EXE 만들기
 
-소스와 빌드 도우미를 제공하며 **EXE는 사용자의 Windows PC에서 제작**합니다. 소스를 로컬 폴더에 완전히 압축 해제하고 `package.json`과 함께 있는 `build-windows.cmd`를 실행하세요. [EXE-만드는법.txt](EXE-만드는법.txt)에 상세 순서가 있습니다.
+소스와 빌드 도우미를 제공하며 **EXE는 사용자의 Windows PC에서 제작**합니다. 0.11.2 소스 ZIP을 **새 로컬 폴더에** 완전히 압축 해제하고 `package.json`과 함께 있는 `build-windows.cmd`를 실행하세요. 이전 버전 폴더에 덮어 풀면 오래된 파일이 섞일 수 있습니다. [EXE-만드는법.txt](EXE-만드는법.txt)에 상세 순서가 있습니다.
 
 | 작업 | 명령 또는 파일 | 결과 |
 | --- | --- | --- |
 | 데스크톱 소스 실행 | `start-windows.cmd` 또는 `npm.cmd start` | 유저용 게임 실행 |
 | EXE 없이 런타임 소스 준비 | `npm.cmd run prepare:user` | `build-clients/user` |
-| Windows 설치 파일 제작 | `build-windows.cmd` 또는 `npm.cmd run dist:win:user` | `release/user/MongleMong-Setup-0.11.1-x64.exe` |
+| Windows 설치 파일 제작 | `build-windows.cmd` 또는 `npm.cmd run dist:win:user` | `release/user/MongleMong-Setup-0.11.2-x64.exe` |
 | 설치 파일 검사 | `npm.cmd run verify:win:user` | 포함 소스·리소스·실행 형식 확인 |
 
 `npm.cmd run dist:win`도 유저용 빌드입니다. 이 소스에서 관리자 빌드나 미리보기를 요청하면 오류로 중단합니다. 관리자용 소스는 별도 비공개 전달본에서 관리합니다.
@@ -47,6 +47,8 @@ npm.cmd run preview
 **카페몽 원본 PNG는 `assets/characters/cafemong.png`에 포함되어 있습니다.** 1536 × 2400 원본을 별도로 가져오거나 다시 임포트할 필요가 없습니다. 기본 리소스가 없거나 규격이 다르면 실행·빌드는 중단됩니다.
 
 도우미는 기본 리소스 검사 → 잠금 파일 기준 의존성 설치 → 유저용 소스 준비 → 설치 파일 제작·검증을 실행합니다. 첫 실행에는 인터넷 다운로드가 필요합니다. 만든 Setup 설치 파일을 한 번 설치하면 바탕화면·시작 메뉴 아이콘으로 CMD 창 없이 실행할 수 있습니다. 다른 사람에게는 Setup 설치 파일 하나를 전달하세요. `win-unpacked` 안의 실행 파일만 복사하면 런타임이 빠집니다.
+
+같은 종류의 새 Setup을 실행하면 기존 설치를 업데이트합니다. 유저용과 관리자용은 별도 앱이므로 각각 해당 종류의 Setup을 사용하세요. 설치된 앱은 Windows 설정의 **앱 → 설치된 앱 → 제거**에서 지울 수 있으며, 현재 설치·제거 설정은 `%APPDATA%`의 게임 저장을 유지합니다. 다운로드한 ZIP과 압축을 푼 이전 소스 폴더는 설치 프로그램이 자동 정리하지 않습니다. 필요한 수정본·자료를 백업한 뒤 직접 정리하세요.
 
 현재 설치 파일은 코드 서명이 설정되지 않은 Windows x64용입니다. 패키지 검사는 실제 Windows 설치·실행 검증을 대신하지 않습니다.
 
@@ -68,6 +70,7 @@ npm.cmd run preview
 - Node.js 또는 npm을 찾지 못하면 Node.js 설치 후 터미널을 다시 엽니다.
 - 개발용 Electron 실행 파일이 없으면 `npm.cmd run setup:electron`으로 공식 런타임 다운로드를 다시 시도합니다.
 - 0.11.0의 `safeStorage.isEncryptionAvailable is deprecated` 메시지는 설치 실패가 아닌 구형 API 경고로, 그 메시지만으로 실행이 중단되지는 않습니다. 0.11.1 소스에서 최신 비동기 API로 수정했으며 Electron 재설치나 게임 저장 초기화는 필요하지 않습니다.
+- `'build' in the application package.json ... is not supported`는 0.11.1의 패키징 설정 오류이며 0.11.2에서 수정했습니다. 새 폴더에 푼 0.11.2 소스로 다시 빌드하세요. `npm deprecated`, `author is missed`, audit 안내는 이 중단의 원인이 아니며 이 오류를 고치려고 `npm audit fix --force`를 실행할 필요가 없습니다.
 - 다운로드나 패키지 검증이 실패하면 표시된 오류를 해결한 뒤 다시 실행합니다. `npm audit fix --force`는 Electron 설치 명령이 아닙니다.
 - 계정 화면에 연결이 준비되지 않았다고 나오면 서비스 주소를 지정하고 다시 실행·빌드합니다. 로그인 오류가 계속되면 서비스 운영자에게 확인합니다.
 - 오류 공유 시 환경변수 파일이나 인증 토큰을 함께 보내지 마세요.
@@ -91,7 +94,7 @@ npm.cmd run preview
 운영자는 Windows에서 유저용 EXE를 만든 뒤 다음 명령으로 업로드할 파일을 준비합니다.
 
 ```powershell
-npm.cmd run prepare:update -- release/user/MongleMong-Setup-0.11.1-x64.exe
+npm.cmd run prepare:update -- release/user/MongleMong-Setup-0.11.2-x64.exe
 ```
 
 검증된 유저용 설치 파일과 버전 정보를 호스팅의 `updates` 폴더에 게시합니다. 설치 파일을 먼저 올리고 `latest.json`을 마지막에 교체하세요. 관리자용 설치 파일은 이 배포 경로에 올리지 않습니다. 소스 변경만으로 배포 파일이 생성되거나 업로드되지는 않습니다.

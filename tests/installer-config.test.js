@@ -3,8 +3,12 @@ import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { readPE, embeddedArchive, assertRuntimeMembers } from '../scripts/verify-windows-package.mjs';
+import { createRequire } from 'node:module';
+import { variantManifest } from '../scripts/prepare-client.mjs';
+import { readPE, embeddedArchive, assertRuntimeMembers, assertPackagedManifest } from '../scripts/verify-windows-package.mjs';
 
+const require = createRequire(import.meta.url);
+const { createTransformer } = require('app-builder-lib/out/fileTransformer.js');
 const root=resolve(import.meta.dirname,'..');
 const pkg=JSON.parse(readFileSync(join(root,'package.json'),'utf8'));
 
@@ -63,4 +67,25 @@ test('offline payload check rejects a generator stub and truncated application d
   bytes.writeBigUInt64LE(68n,120);
   assert.equal(embeddedArchive(bytes).length,1_100_000);
   assert.throws(()=>embeddedArchive(bytes.subarray(0,150_880)),/Installer is incomplete/);
+});
+
+test('package verification accepts electron-builder cleaned metadata and rejects changed runtime identity', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'MongleMong-package-metadata-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  for (const flavor of ['user']) {
+    const source = variantManifest(pkg, flavor);
+    const file = join(directory, 'package.json');
+    writeFileSync(file, JSON.stringify(source));
+    // Exercise the installed builder's real transformation, without building
+    // or executing an installer, rather than assuming it preserves build.appId.
+    const transformed = await createTransformer(directory, source.build)(file);
+    const manifest = JSON.parse(transformed);
+    assert.equal(manifest.build, undefined);
+    assert.equal(manifest.name, source.name);
+    assert.doesNotThrow(() => assertPackagedManifest(manifest, source));
+    for (const [field, value] of [['name', 'wrong-client'], ['version', '0.0.0'], ['main', 'wrong-entry.cjs'], ['type', 'commonjs']]) {
+      assert.throws(() => assertPackagedManifest({ ...manifest, [field]: value }, source));
+    }
+    assert.throws(() => assertPackagedManifest({ ...manifest, main: 'wrong-entry.cjs' }, { ...source, main: 'wrong-entry.cjs' }), /launch Electron directly/);
+  }
 });

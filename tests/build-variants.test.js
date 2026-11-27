@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { prepareClient, resolveClientApiBaseUrl, variantManifest } from '../scripts/prepare-client.mjs';
+import { createWindowsBuildOptions } from '../scripts/build-windows.mjs';
 import { createPreviewServer } from '../scripts/serve.mjs';
 import { assertRuntimeMembers } from '../scripts/verify-windows-package.mjs';
 import { RUNTIME_CONFIG } from '../src/runtime-config.js';
@@ -49,6 +50,52 @@ function fixture(t) {
   writeFileSync(join(projectRoot, 'public-source-policy.json'), JSON.stringify({ schemaVersion: 1, files }));
   return projectRoot;
 }
+
+test('Windows options pass the real builder metadata validation using one prepared package', async t => {
+  const { Packager } = require('app-builder-lib/out/packager.js');
+  const { Platform, Arch } = require('electron-builder');
+  const projectRoot = fixture(t);
+  for (const flavor of ['user']) {
+    const prepared = prepareClient({ projectRoot, flavor });
+    const before = structuredClone(prepared.manifest);
+    const cache = join(projectRoot, 'Electron download cache');
+    const options = createWindowsBuildOptions(prepared, { electronVersion: '45.4.1', electronCache: cache });
+    assert.equal(options.projectDir, prepared.directory);
+    assert.equal(Object.hasOwn(options.config.directories, 'app'), false);
+    assert.equal(options.config.directories.output, prepared.releaseDirectory);
+    assert.equal(options.config.electronVersion, '45.4.1');
+    assert.equal(options.config.electronDownload.cache, cache);
+    assert.equal(options.publish, 'never');
+    assert.deepEqual(options.targets, Platform.WINDOWS.createTarget(['nsis'], Arch.x64));
+    assert.deepEqual(prepared.manifest, before, 'build options must not rewrite the prepared app identity');
+
+    // This reproduces the reported error without downloading tools or building
+    // any executable: root + directories.app is a two-package project, but the
+    // prepared app intentionally retains its own build metadata.
+    const oldOptions = { ...options, projectDir: projectRoot,
+      config: { ...options.config, directories: { ...options.config.directories, app: prepared.directory } } };
+    await assert.rejects(new Packager(oldOptions).validateConfig(), /'build' in the application package\.json/);
+
+    const packager = new Packager(options);
+    await packager.validateConfig();
+    assert.equal(packager.isTwoPackageJsonProjectLayoutUsed, false);
+    assert.equal(packager.projectDir, prepared.directory);
+    assert.equal(packager.appDir, prepared.directory);
+    assert.equal(packager.metadata.name, prepared.manifest.name);
+    assert.equal(packager.metadata.version, source.version);
+    assert.equal(packager.metadata.main, 'electron/main.cjs');
+    assert.equal(packager.config.appId, prepared.manifest.build.appId);
+    assert.equal(packager.config.productName, prepared.manifest.build.productName);
+    assert.equal(packager.config.nsis.artifactName, prepared.manifest.build.nsis.artifactName);
+    assert.equal(packager.config.nsis.deleteAppDataOnUninstall, false);
+    assert.equal(packager.config.directories.output, prepared.releaseDirectory);
+    assert.equal(packager.buildResourcesDir, join(prepared.directory, 'build'));
+    for (const name of ['index.html', 'electron/main.cjs', 'build/icon.ico', 'assets/characters/cafemong.png']) {
+      assert.ok(existsSync(join(packager.appDir, name)), `Missing staged build input: ${name}`);
+    }
+    assert.equal(existsSync(prepared.releaseDirectory), false, 'validation must not produce installer artifacts');
+  }
+});
 
 test('the checked-in service origin reaches default prepared source and its browser policy', async t => {
   restoreApiEnvironment(t);
