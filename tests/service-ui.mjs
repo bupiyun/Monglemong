@@ -13,8 +13,8 @@ const root = resolve(import.meta.dirname, '..');
 const output = resolve(root, 'test-results');
 const url = 'http://127.0.0.1:3022';
 const saveKey = 'mori.game.v1';
-const fixturePassword = 'fixture-password-123';
-const changedPassword = 'changed-password-456';
+const fixturePassword = 'Ab1!xy';
+const changedPassword = 'Cd2@yz';
 const rendererErrors = [];
 let browser;
 const servers = [spawn(process.execPath, ['scripts/serve.mjs'], {
@@ -45,7 +45,7 @@ async function openPage({ role = 'user', configured = true } = {}) {
   await page.addInitScript(({ guest, online, key, role }) => {
     localStorage.setItem(key, JSON.stringify(guest));
     window.__service = { role, token: null, expired: false, requests: [],
-      openedURLs: [], game: online, revision: 1, regions: [], username: 'fixture_user', password: 'fixture-password-123', name: '테스트 모험가' };
+      openedURLs: [], game: online, revision: 1, regions: [], username: 'fixture_user', password: 'Ab1!xy', name: '테스트 모험가' };
     const mock = window.__service;
     const profile = () => ({ id: 'test-account', username: mock.username, email: '', name: mock.name, role: mock.role });
     const ok = body => ({ status: 200, body, contentType: 'application/json' });
@@ -296,7 +296,7 @@ try {
   await expect(registrationPage.locator('#account-password')).toHaveValue('');
   await expect(registrationPage.locator('#account-password-confirm')).toHaveValue('');
   await registrationPage.locator('#account-username').fill('fixture_reg');
-  for (const password of ['가'.repeat(25), '😀'.repeat(11), 'a'.repeat(73)]) {
+  for (const password of ['abcde', '😀'.repeat(5), '가'.repeat(25), 'a'.repeat(73)]) {
     await registrationPage.locator('#account-password').fill(password);
     await registrationPage.locator('#account-password-confirm').fill(password);
     await registrationPage.locator('#account-register').click();

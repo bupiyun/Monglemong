@@ -86,15 +86,38 @@ test('credential validation bounds Unicode password bytes and rejects invalid fi
   for (const username of ['abc', 'UPPER', '1player', 'with space', 'a'.repeat(33), null]) {
     assert.throws(() => run.client.login({ ...credentials, username }), error => error.code === 'INVALID_USERNAME');
   }
-  for (const password of ['short', 'a'.repeat(73), '한'.repeat(25), 'a'.repeat(11) + '\0']) {
+  for (const password of ['short', '😀'.repeat(5), 'a'.repeat(73), '한'.repeat(25), 'a'.repeat(5) + '\0']) {
     assert.throws(() => run.client.login({ ...credentials, password }), error => error.code === 'INVALID_PASSWORD');
   }
   for (const name of ['', ' ', '한'.repeat(41)]) {
     assert.throws(() => run.client.register({ ...credentials, name }), error => error.code === 'INVALID_NAME');
   }
   assert.equal(run.calls.length, 0);
-  await run.client.register({ ...credentials, password: '😀'.repeat(12) });
-  assert.equal(run.calls[0].body.password, '😀'.repeat(12), '12 Unicode code points within 72 UTF-8 bytes are valid');
+  await run.client.register({ ...credentials, password: '😀'.repeat(6) });
+  assert.equal(run.calls[0].body.password, '😀'.repeat(6), '6 Unicode code points within 72 UTF-8 bytes are valid');
+});
+
+test('six-character passwords work across registration, login, password change and deletion', async () => {
+  for (const password of ['Ab1!xy', '123456', '한'.repeat(6), 'a'.repeat(72), '😀'.repeat(18)]) {
+    const run = browserHarness();
+    await run.client.register({ ...credentials, password });
+    assert.equal(run.calls[0].body.password, password);
+    await run.client.login({ ...credentials, password });
+    assert.equal(run.calls.at(-1).body.password, password);
+  }
+  const run = browserHarness();
+  await run.client.login(credentials); // Existing longer passwords still work.
+  const before = run.calls.length;
+  for (const newPassword of ['abcde', '😀'.repeat(5)]) {
+    assert.throws(() => run.client.changePassword({ currentPassword: credentials.password, newPassword }), error => error.code === 'INVALID_PASSWORD');
+  }
+  assert.equal(run.calls.length, before, 'five-character new passwords never reach the server');
+  run.respond(() => json(session()));
+  await run.client.changePassword({ currentPassword: credentials.password, newPassword: 'Cd2@yz' });
+  assert.deepEqual(run.calls.at(-1).body, { currentPassword: credentials.password, newPassword: 'Cd2@yz' });
+  run.respond(() => json({ ok: true }));
+  await run.client.deleteAccount({ password: 'Cd2@yz' });
+  assert.deepEqual(run.calls.at(-1).body, { password: 'Cd2@yz' });
 });
 
 test('failed login returns to guest state and an invalid session response is never persisted', async () => {

@@ -18,7 +18,7 @@ export function mountAccountPanel(container, {
         <small id="account-username-hint">영문 소문자로 시작하는 4~32자의 소문자·숫자·밑줄</small>
         <label id="account-register-name-row" for="account-register-name" hidden>표시 이름 <span>(선택)</span><input id="account-register-name" name="name" autocomplete="nickname" maxlength="80"></label>
         <label for="account-password">비밀번호<input id="account-password" name="password" type="password" autocomplete="current-password" maxlength="256" required aria-describedby="account-password-hint"></label>
-        <small id="account-password-hint">12자 이상, 최대 72바이트 (한글 등은 여러 바이트를 사용해요)</small>
+        <small id="account-password-hint">6자 이상, 최대 72바이트 (한글 등은 여러 바이트를 사용해요)</small>
         <label id="account-password-confirm-row" for="account-password-confirm" hidden>비밀번호 확인<input id="account-password-confirm" type="password" autocomplete="new-password" maxlength="256"></label>
         <div class="account-actions"><button type="submit" id="account-login" class="primary-button">로그인</button><button type="submit" id="account-register" class="primary-button" hidden>회원가입하고 시작하기</button></div>
         <p class="account-note">비밀번호를 잊었다면 운영자에게 계정 복구를 문의해 주세요.</p>
@@ -34,7 +34,7 @@ export function mountAccountPanel(container, {
         <label for="account-current-password">현재 비밀번호<input id="account-current-password" type="password" autocomplete="current-password" maxlength="256" required></label>
         <label for="account-new-password">새 비밀번호<input id="account-new-password" type="password" autocomplete="new-password" maxlength="256" required></label>
         <label for="account-new-password-confirm">새 비밀번호 확인<input id="account-new-password-confirm" type="password" autocomplete="new-password" maxlength="256" required></label>
-        <small>12자 이상, 최대 72바이트</small>
+        <small>6자 이상, 최대 72바이트</small>
         <div class="account-actions"><button type="submit" id="account-password-submit" class="primary-button">비밀번호 저장</button><button type="button" id="account-password-cancel" class="secondary-button">취소</button></div>
       </form>
       <p class="account-note">이 기기의 기존 플레이와 온라인 계정의 진행도는 별도로 보관해요. 로그인할 때 기기 저장을 서버로 덮어쓰지 않아요.</p>
@@ -53,8 +53,8 @@ export function mountAccountPanel(container, {
   let mode = 'login', message = '', notice = '';
   const clearPasswords = () => { for (const input of container.querySelectorAll('input[type="password"]')) input.value = ''; };
   function passwordError(password) {
-    return typeof password !== 'string' || password.includes('\0') || [...password].length < 12 || new TextEncoder().encode(password).length > 72
-      ? '비밀번호는 12자 이상, 최대 72바이트로 입력해 주세요.' : '';
+    return typeof password !== 'string' || password.includes('\0') || [...password].length < 6 || new TextEncoder().encode(password).length > 72
+      ? '비밀번호는 6자 이상, 최대 72바이트로 입력해 주세요.' : '';
   }
   function showValidation(error) { message = error; notice = ''; clearPasswords(); render(); }
   function render() {

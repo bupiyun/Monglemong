@@ -38,8 +38,8 @@ function abortError() {
 }
 
 function password(value) {
-  if (typeof value !== 'string' || [...value].length < 12 || new TextEncoder().encode(value).byteLength > 72 || value.includes('\0')) {
-    throw new ServiceError('비밀번호는 12자 이상, UTF-8 기준 72바이트 이하로 입력해 주세요.', { code: 'INVALID_PASSWORD' });
+  if (typeof value !== 'string' || [...value].length < 6 || new TextEncoder().encode(value).byteLength > 72 || value.includes('\0')) {
+    throw new ServiceError('비밀번호는 6자 이상, UTF-8 기준 72바이트 이하로 입력해 주세요.', { code: 'INVALID_PASSWORD' });
   }
   return value;
 }
