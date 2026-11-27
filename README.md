@@ -52,6 +52,20 @@ npm.cmd run preview
 
 현재 설치 파일은 코드 서명이 설정되지 않은 Windows x64용입니다. 패키지 검사는 실제 Windows 설치·실행 검증을 대신하지 않습니다.
 
+### 카페몽 PNG가 없다는 결과물 검사 오류 (미출시 수정)
+
+0.11.2에서 Setup 제작 후 `assets/characters/cafemong.png`를 찾을 수 없다고 나오는 경우, Windows의 ASAR 내부 경로 처리 오류로 포함된 파일도 누락으로 표시될 수 있습니다. 검사 도구가 경로 구분자를 맞추도록 수정했으며 원본 PNG는 바꾸지 않았습니다. 실제 파일 누락·손상과 원본 해시 불일치는 계속 오류로 처리하므로, 이 메시지만으로 PNG가 반드시 들어 있다고 판단하지는 않습니다.
+
+현재 배포한 **0.11.2 ZIP에는 이 수정이 포함되어 있지 않습니다.** 로컬 수정은 `미출시 (Unreleased)`로 관리하며 승인된 다음 배포에 반영합니다. 실제 ASAR 자료와 Windows 경로 처리 검사는 EXE 제작·실제 Windows 설치 실행 검증과 구분합니다.
+
+수정된 `scripts/verify-windows-package.mjs`만 교체했고 빌드 후 게임 소스·리소스·설정을 바꾸지 않은 경우, 같은 빌드의 `build-clients/user`, Setup 파일, `release/user/win-unpacked`가 모두 남아 있으면 소스 루트에서 결과물 검사만 다시 실행할 수 있습니다.
+
+```powershell
+node scripts/verify-windows-package.mjs user
+```
+
+준비 소스를 다시 생성했거나 게임 소스·설정을 바꿨거나 결과물이 없다면, 수정된 검사 도구를 포함한 소스에서 `build-windows.cmd`로 전체 빌드를 다시 진행하세요. 결과물 검사를 통과한 뒤 설치 파일을 사용합니다.
+
 ### 온라인 서비스 주소
 
 실행·미리보기·빌드의 기본 계정 서비스 주소는 **`https://monglemong.kr`**입니다. `src/runtime-config.json`의 주소를 읽으며, 다른 개발 서버를 쓰려면 환경변수로 재정의합니다.

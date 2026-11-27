@@ -1,14 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { cpSync, mkdirSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { dirname, join, normalize, resolve, win32 } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { variantManifest } from '../scripts/prepare-client.mjs';
-import { readPE, embeddedArchive, assertRuntimeMembers, assertPackagedManifest } from '../scripts/verify-windows-package.mjs';
+import { readPE, embeddedArchive, assertRuntimeMembers, assertPackagedManifest, verifyRuntimeArchive } from '../scripts/verify-windows-package.mjs';
 
 const require = createRequire(import.meta.url);
 const { createTransformer } = require('app-builder-lib/out/fileTransformer.js');
+const asar = require('@electron/asar');
 const root=resolve(import.meta.dirname,'..');
 const pkg=JSON.parse(readFileSync(join(root,'package.json'),'utf8'));
 
@@ -87,5 +89,98 @@ test('package verification accepts electron-builder cleaned metadata and rejects
       assert.throws(() => assertPackagedManifest({ ...manifest, [field]: value }, source));
     }
     assert.throws(() => assertPackagedManifest({ ...manifest, main: 'wrong-entry.cjs' }, { ...source, main: 'wrong-entry.cjs' }), /launch Electron directly/);
+  }
+});
+
+async function runtimeArchiveFixture(t, flavor = 'user') {
+  // Real ASAR files exercise host-native member lookup. The Windows CI job
+  // executes this same verifier, with no installer or Electron executable.
+  const directory = mkdtempSync(join(tmpdir(), 'MongleMong ASAR 검사-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const sourceRoot = join(directory, 'prepared source');
+  const manifest = variantManifest(pkg, flavor);
+  const files = {
+    'index.html': '<!doctype html><title>MongleMong fixture</title>',
+    'src/runtime-config.json': JSON.stringify({ flavor, apiBaseUrl: 'https://game.example.com' }),
+    'assets/characters/cafemong.png': readFileSync(join(root, 'assets/characters/cafemong.png')),
+    'electron/main.cjs': "'use strict';\n",
+    'electron/native/window-surfaces.ps1': readFileSync(join(root, 'electron/native/window-surfaces.ps1')),
+    'package.json': JSON.stringify(manifest),
+  };
+  for (const [name, bytes] of Object.entries(files)) {
+    const file = join(sourceRoot, name);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, bytes);
+  }
+  let sequence = 0;
+  return {
+    sourceRoot, flavor, approvedPaths: Object.keys(files), runtimeFileCount: Object.keys(files).length - 1,
+    async pack(mutate = () => {}) {
+      const packaged = join(directory, `packaged-${++sequence}`);
+      cpSync(sourceRoot, packaged, { recursive: true });
+      const packageFile = join(packaged, 'package.json');
+      writeFileSync(packageFile, await createTransformer(packaged, manifest.build)(packageFile));
+      mutate(packaged);
+      const archive = join(directory, `app-${sequence}.asar`);
+      await asar.createPackage(packaged, archive);
+      t.after(() => asar.uncache(archive));
+      return archive;
+    },
+  };
+}
+
+test('real ASAR verification reads original Cafemong and nested runtime members on the host platform', async t => {
+  for (const flavor of ['user']) {
+    const fixture = await runtimeArchiveFixture(t, flavor);
+    const archive = await fixture.pack();
+    const verified = verifyRuntimeArchive({ ...fixture, archive });
+    assert.equal(verified, fixture.runtimeFileCount);
+    const image = asar.extractFile(archive, normalize('assets/characters/cafemong.png'));
+    assert.deepEqual(image, readFileSync(join(root, 'assets/characters/cafemong.png')));
+  }
+});
+
+test('real ASAR verification still rejects missing or changed Cafemong artwork', async t => {
+  const fixture = await runtimeArchiveFixture(t);
+  const missing = await fixture.pack(directory => rmSync(join(directory, 'assets/characters/cafemong.png')));
+  assert.throws(() => verifyRuntimeArchive({ ...fixture, archive: missing }), /Missing runtime file: assets\/characters\/cafemong\.png/);
+  const corrupt = await fixture.pack(directory => {
+    const file = join(directory, 'assets/characters/cafemong.png');
+    const bytes = readFileSync(file);
+    bytes[bytes.length - 1] ^= 1;
+    writeFileSync(file, bytes);
+  });
+  assert.throws(() => verifyRuntimeArchive({ ...fixture, archive: corrupt }), /Stale runtime file: assets\/characters\/cafemong\.png/);
+});
+
+test('real ASAR verification rejects stale nested runtime code and a different client flavor', async t => {
+  const fixture = await runtimeArchiveFixture(t);
+  const stale = await fixture.pack(directory => writeFileSync(join(directory, 'electron/native/window-surfaces.ps1'), '# stale collector'));
+  assert.throws(() => verifyRuntimeArchive({ ...fixture, archive: stale }), /Stale runtime file: electron\/native\/window-surfaces\.ps1/);
+  const wrongFlavor = await fixture.pack(directory => writeFileSync(join(directory, 'src/runtime-config.json'), JSON.stringify({ flavor: 'admin' })));
+  assert.throws(() => verifyRuntimeArchive({ ...fixture, archive: wrongFlavor }), /Packaged client/);
+});
+
+test('actual ASAR Windows lookup requires native separators for nested members', async t => {
+  const fixture = await runtimeArchiveFixture(t);
+  const archive = await fixture.pack();
+  const library = require.resolve('@electron/asar/lib/filesystem.js');
+  const libraryRequire = createRequire(library);
+  const loaded = { exports: {} };
+  // Run the installed library's own lookup code with Windows path operations,
+  // using a real archive header. This is not a replacement filesystem model.
+  const load = runInNewContext(`(function(require, module, exports) {\n${readFileSync(library, 'utf8')}\n})`, {}, { filename: library });
+  load(name => name === 'path' ? win32 : libraryRequire(name), loaded, loaded.exports);
+  const { Filesystem } = loaded.exports;
+  const windowsFilesystem = new Filesystem('C:\\fixture\\app.asar');
+  const header = asar.getRawHeader(archive);
+  windowsFilesystem.setHeader(header.header, header.headerSize);
+  assert.ok(windowsFilesystem.getFile('src/runtime-config.json'), 'one-level paths can hide the Windows lookup bug');
+  for (const name of ['assets/characters/cafemong.png', 'electron/native/window-surfaces.ps1']) {
+    assert.throws(() => windowsFilesystem.getFile(name), /was not found in this archive/);
+    const windowsMember = windowsFilesystem.getFile(win32.normalize(name));
+    const actualMember = asar.statFile(archive, normalize(name));
+    assert.equal(windowsMember.size, actualMember.size);
+    assert.equal(windowsMember.offset, actualMember.offset);
   }
 });

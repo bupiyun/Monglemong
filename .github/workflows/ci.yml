@@ -45,3 +45,22 @@ jobs:
         run: node --test tests/*.test.js
       - name: Prepare user source without building an executable
         run: npm run prepare:user
+
+  windows-package-checks:
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install locked client dependencies without installers
+        run: npm ci --include=dev --ignore-scripts
+      # Exercise native Windows ASAR paths with test archives only. No game EXE,
+      # administrator sources, signing, release upload or installer build runs.
+      - name: Validate Windows archive paths and bundled assets
+        run: node --test tests/installer-config.test.js tests/base-assets.test.js

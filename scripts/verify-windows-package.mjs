@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, normalize, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkBaseAssets } from './check-base-assets.mjs';
 import { resolveFlavor } from './prepare-client.mjs';
@@ -90,6 +90,27 @@ export function embeddedArchive(bytes) {
   return bytes.subarray(candidate.start,candidate.start+candidate.size);
 }
 
+/** Verify the archive separately from the installer, without building or running an EXE. */
+export function verifyRuntimeArchive({ archive, sourceRoot, flavor = 'user', approvedPaths } = {}) {
+  resolveFlavor(flavor);
+  const source = JSON.parse(readFileSync(join(sourceRoot, 'package.json'), 'utf8'));
+  // Keep portable slash-separated names for policy checks. ASAR lookup uses the
+  // host path separator: on Windows, unnormalized multi-level paths look absent.
+  const members = asar.listPackage(archive).map(name=>name.replaceAll('\\','/').replace(/^\//,''));
+  assertRuntimeMembers(members, { flavor, approvedPaths });
+  const manifest=JSON.parse(asar.extractFile(archive,normalize('package.json')).toString());
+  assertPackagedManifest(manifest, source);
+  const runtimeConfig = JSON.parse(asar.extractFile(archive, normalize('src/runtime-config.json')).toString());
+  assert.equal(runtimeConfig.flavor, flavor, 'Packaged client must be the user client');
+  const required=[join(sourceRoot,'index.html'),...['src','assets','electron'].flatMap(folder=>filesUnder(join(sourceRoot,folder)))];
+  for(const file of required) {
+    const name=relative(sourceRoot,file).replaceAll('\\','/');
+    assert.ok(members.includes(name),`Missing runtime file: ${name}`);
+    assert.equal(sha256(asar.extractFile(archive,normalize(name))),sha256(readFileSync(file)),`Stale runtime file: ${name}`);
+  }
+  return required.length;
+}
+
 export async function verifyWindowsPackage({projectRoot=root,installer,appDirectory,flavor='user'}={}) {
   resolveFlavor(flavor);
   const approved = checkWorktree(projectRoot);
@@ -112,18 +133,7 @@ export async function verifyWindowsPackage({projectRoot=root,installer,appDirect
   assert.equal(appPE.subsystem,2,`${executableName} must use the Windows GUI subsystem, not a console subsystem`);
   assert.equal(appPE.machine,0x8664,'This artifact is the x64 Windows release');
 
-  const members = asar.listPackage(archive).map(name=>name.replaceAll('\\','/').replace(/^\//,''));
-  assertRuntimeMembers(members, { flavor, approvedPaths: approved.paths.filter(name => ['index.html', 'package.json'].includes(name) || /^(src|assets|electron)\//.test(name)) });
-  const manifest=JSON.parse(asar.extractFile(archive,'package.json').toString());
-  assertPackagedManifest(manifest, source);
-  const runtimeConfig = JSON.parse(asar.extractFile(archive, 'src/runtime-config.json').toString());
-  assert.equal(runtimeConfig.flavor, flavor, 'Packaged client must be the user client');
-  const required=[join(sourceRoot,'index.html'),...['src','assets','electron'].flatMap(folder=>filesUnder(join(sourceRoot,folder)))];
-  for(const file of required) {
-    const name=relative(sourceRoot,file).replaceAll('\\','/');
-    assert.ok(members.includes(name),`Missing runtime file: ${name}`);
-    assert.equal(sha256(asar.extractFile(archive,name)),sha256(readFileSync(file)),`Stale runtime file: ${name}`);
-  }
+  const verifiedRuntimeFiles = verifyRuntimeArchive({ archive, sourceRoot, flavor, approvedPaths: approved.paths.filter(name => ['index.html', 'package.json'].includes(name) || /^(src|assets|electron)\//.test(name)) });
   for(const binary of ['icudtl.dat','resources.pak','v8_context_snapshot.bin','locales/en-US.pak']) {
     assert.ok(existsSync(join(appDir,binary)),`Missing bundled Electron resource: ${binary}`);
   }
@@ -144,7 +154,7 @@ export async function verifyWindowsPackage({projectRoot=root,installer,appDirect
     assert.equal(await hashFile(join(temp,'resources','app.asar')),await hashFile(archive),'Installer contains stale application code');
   } finally {rmSync(temp,{recursive:true,force:true});}
   return {installer:installPath,flavor,version:source.version,installerBytes:installerPE.size,appBytes:appPE.size,
-    guiSubsystem:true,architecture:'x64',verifiedRuntimeFiles:required.length,
+    guiSubsystem:true,architecture:'x64',verifiedRuntimeFiles,
     embeddedPayloadBytes:payload.length,sha256:sha256(installerBytes),executionTested:false};
 }
 
