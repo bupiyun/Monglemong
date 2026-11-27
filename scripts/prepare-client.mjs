@@ -4,6 +4,7 @@ import { dirname, extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkBaseAssets } from './check-base-assets.mjs';
 import { checkWorktree } from './check-public-source.mjs';
+import { UPDATE_ORIGIN } from '../src/update-manifest.js';
 
 const require = createRequire(import.meta.url);
 const { normalizeApiBaseUrl } = require('../electron/service-bridge.cjs');
@@ -17,6 +18,19 @@ export function resolveFlavor(value = process.env.MONGLEMONG_BUILD_FLAVOR || 'us
     throw new Error('This source supports user builds only. Use the separate private workspace for privileged tooling.');
   }
   return 'user';
+}
+
+/** An explicit empty override keeps a build in guest-only mode. */
+export function resolveClientApiBaseUrl(projectRoot = ROOT, override = process.env.MONGLEMONG_API_URL) {
+  const value = override === undefined
+    ? JSON.parse(readFileSync(join(projectRoot, 'src', 'runtime-config.json'), 'utf8')).apiBaseUrl
+    : override;
+  return normalizeApiBaseUrl(value);
+}
+
+export function clientConnectPolicy(apiBaseUrl) {
+  const origins = [...new Set([apiBaseUrl, UPDATE_ORIGIN].filter(Boolean))];
+  return `connect-src 'self' ${origins.join(' ')};`;
 }
 
 export function variantManifest(source, flavor = 'user', releaseOutput = '../../release/user') {
@@ -39,11 +53,11 @@ function copyRuntimeFiles(projectRoot, destination, approvedPaths) {
 }
 
 /** Prepare source only. This function never starts Electron or builds EXEs. */
-export function prepareClient({ projectRoot = ROOT, flavor = 'user', apiBaseUrl = process.env.MONGLEMONG_API_URL || '' } = {}) {
+export function prepareClient({ projectRoot = ROOT, flavor = 'user', apiBaseUrl } = {}) {
   resolveFlavor(flavor);
   projectRoot = resolve(projectRoot);
-  const config = { flavor, apiBaseUrl: normalizeApiBaseUrl(apiBaseUrl) };
   const approved = checkWorktree(projectRoot);
+  const config = { flavor, apiBaseUrl: resolveClientApiBaseUrl(projectRoot, apiBaseUrl) };
   checkBaseAssets(projectRoot);
   const source = JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf8'));
   const directory = join(projectRoot, 'build-clients', flavor);
@@ -69,7 +83,7 @@ export function prepareClient({ projectRoot = ROOT, flavor = 'user', apiBaseUrl 
   let html = readFileSync(join(projectRoot, 'index.html'), 'utf8');
   html = html.replace(/^\s*<link\b[^>]*href=["']src\/admin\.css["'][^>]*>\s*$/gm, '');
   // Replacing the directive separately avoids changing any other CSP boundary.
-  html = html.replace(/connect-src 'self'[^;]*;/, `connect-src 'self'${config.apiBaseUrl ? ` ${config.apiBaseUrl}` : ''};`);
+  html = html.replace(/connect-src 'self'[^;]*;/, clientConnectPolicy(config.apiBaseUrl));
   writeFileSync(join(directory, 'index.html'), html);
   writeFileSync(join(directory, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
   writeFileSync(join(directory, 'src', 'runtime-config.json'), JSON.stringify(config, null, 2) + '\n');

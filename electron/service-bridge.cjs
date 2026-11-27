@@ -7,10 +7,11 @@ const MAX_BODY = 32 * 1024 * 1024;
 const MAX_RESPONSE = 24 * 1024 * 1024;
 const TOKEN = /^[A-Za-z0-9_-]{32,256}$/;
 const ROUTES = [
-  [/^\/v1\/auth\/(start|poll)$/, ['POST']],
+  [/^\/v1\/auth\/(register|login)$/, ['POST']],
   [/^\/v1\/me$/, ['GET']],
   [/^\/v1\/logout$/, ['POST']],
   [/^\/v1\/account$/, ['DELETE']],
+  [/^\/v1\/account\/password$/, ['POST']],
   [/^\/v1\/game\/(sync|action)$/, ['POST']],
   [/^\/v1\/characters$/, ['GET']],
   [/^\/v1\/characters\/[A-Za-z0-9_-]{1,100}\/sprite$/, ['GET']],
@@ -49,14 +50,6 @@ function validateRequest(request) {
     if (Buffer.byteLength(serialized) > MAX_BODY) throw new Error('요청 크기가 너무 커요.');
   }
   return { method, route, serialized };
-}
-
-function isGoogleAuthorizationUrl(value) {
-  try {
-    const url = new URL(value);
-    return url.protocol === 'https:' && url.hostname === 'accounts.google.com' && !url.port
-      && !url.username && !url.password && url.pathname === '/o/oauth2/v2/auth' && !url.hash;
-  } catch { return false; }
 }
 
 /** Store only encrypted opaque sessions. Linux's plaintext fallback is refused. */
@@ -129,9 +122,8 @@ async function readBoundedResponse(response) {
   return Buffer.concat(chunks);
 }
 
-function createServiceBridge({ config, vault, fetchImpl = fetch, openExternal, clock = Date.now }) {
+function createServiceBridge({ config, vault, fetchImpl = fetch }) {
   const apiBaseUrl = normalizeApiBaseUrl(config.apiBaseUrl);
-  let authorizedLogin = null;
   return {
     getAccountSession: () => vault.has(),
     setAccountSession: token => vault.set(token),
@@ -157,19 +149,9 @@ function createServiceBridge({ config, vault, fetchImpl = fetch, openExternal, c
       let body;
       try { body = JSON.parse(bytes.toString('utf8')); } catch { throw new Error('서버 응답을 읽지 못했어요.'); }
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('서버 응답 형식이 올바르지 않아요.');
-      if (route === '/v1/auth/start' && response.ok && isGoogleAuthorizationUrl(body.authorizationUrl)) {
-        authorizedLogin = { url: body.authorizationUrl, expiresAt: clock() + 300_000 };
-      }
       return { status: response.status, contentType, body };
-    },
-    async openAccountLogin(value) {
-      if (!authorizedLogin || value !== authorizedLogin.url || clock() > authorizedLogin.expiresAt
-        || !isGoogleAuthorizationUrl(value)) throw new Error('로그인 요청이 만료되었어요. 구글 로그인을 다시 눌러 주세요.');
-      authorizedLogin = null;
-      await openExternal(value);
-      return true;
     },
   };
 }
 
-module.exports = { normalizeApiBaseUrl, readRuntimeConfig, validateRequest, isGoogleAuthorizationUrl, createSessionVault, createServiceBridge };
+module.exports = { normalizeApiBaseUrl, readRuntimeConfig, validateRequest, createSessionVault, createServiceBridge };

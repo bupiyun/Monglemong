@@ -1,13 +1,10 @@
 import http from 'node:http';
 import { readFile, realpath } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { resolve, extname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveFlavor } from './prepare-client.mjs';
+import { clientConnectPolicy, resolveClientApiBaseUrl, resolveFlavor } from './prepare-client.mjs';
 import { checkWorktree } from './check-public-source.mjs';
 
-const require = createRequire(import.meta.url);
-const { normalizeApiBaseUrl } = require('../electron/service-bridge.cjs');
 const ROOT = resolve(import.meta.dirname, '..');
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -18,11 +15,12 @@ const MIME = {
 export function createPreviewServer({
   projectRoot = ROOT,
   flavor = process.env.MONGLEMONG_BUILD_FLAVOR || 'user',
-  apiBaseUrl = process.env.MONGLEMONG_API_URL || '',
+  apiBaseUrl,
 } = {}) {
   const root = resolve(projectRoot);
-  const config = { flavor: resolveFlavor(flavor), apiBaseUrl: normalizeApiBaseUrl(apiBaseUrl) };
+  flavor = resolveFlavor(flavor);
   const approved = new Set(checkWorktree(root).paths);
+  const config = { flavor, apiBaseUrl: resolveClientApiBaseUrl(root, apiBaseUrl) };
   const runtimeModule = `export const RUNTIME_CONFIG = Object.freeze(${JSON.stringify(config)});\n`;
   return http.createServer(async (req, res) => {
     if (!['GET', 'HEAD'].includes(req.method)) {
@@ -63,7 +61,7 @@ export function createPreviewServer({
         if (name === 'index.html') {
           body = body.toString('utf8');
           body = body.replace(/^\s*<link\b[^>]*href=["']src\/admin\.css["'][^>]*>\s*$/gm, '');
-          body = body.replace(/connect-src 'self'[^;]*;/, `connect-src 'self'${config.apiBaseUrl ? ` ${config.apiBaseUrl}` : ''};`);
+          body = body.replace(/connect-src 'self'[^;]*;/, clientConnectPolicy(config.apiBaseUrl));
         }
       }
       res.writeHead(200, { 'Content-Type': MIME[extname(target)], 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });

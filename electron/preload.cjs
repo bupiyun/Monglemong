@@ -13,8 +13,11 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
   getAccountSession() {
     return ipcRenderer.invoke('desktop:getAccountSession');
   },
-  openAccountLogin(url) {
-    return ipcRenderer.invoke('desktop:openAccountLogin', url);
+  checkUpdates() {
+    return ipcRenderer.invoke('desktop:checkUpdates');
+  },
+  openUpdateDownload() {
+    return ipcRenderer.invoke('desktop:openUpdateDownload');
   },
   setInteractiveRegions(rects) {
     ipcRenderer.send('desktop:regions', rects);

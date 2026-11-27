@@ -13,6 +13,8 @@ const root = resolve(import.meta.dirname, '..');
 const output = resolve(root, 'test-results');
 const url = 'http://127.0.0.1:3022';
 const saveKey = 'mori.game.v1';
+const fixturePassword = 'fixture-password-123';
+const changedPassword = 'changed-password-456';
 const rendererErrors = [];
 let browser;
 const servers = [spawn(process.execPath, ['scripts/serve.mjs'], {
@@ -43,9 +45,9 @@ async function openPage({ role = 'user', configured = true } = {}) {
   await page.addInitScript(({ guest, online, key, role }) => {
     localStorage.setItem(key, JSON.stringify(guest));
     window.__service = { role, token: null, expired: false, requests: [],
-      openedURLs: [], game: online, revision: 1, regions: [] };
+      openedURLs: [], game: online, revision: 1, regions: [], username: 'fixture_user', password: 'fixture-password-123', name: '테스트 모험가' };
     const mock = window.__service;
-    const profile = () => ({ id: 'test-account', email: 'fixture@example.test', name: '테스트 모험가', role: mock.role });
+    const profile = () => ({ id: 'test-account', username: mock.username, email: '', name: mock.name, role: mock.role });
     const ok = body => ({ status: 200, body, contentType: 'application/json' });
     const error = (status, code, message) => ({ status, body: { error: { code, message } }, contentType: 'application/json' });
     const envelope = () => ({ game: structuredClone(mock.game), revision: mock.revision,
@@ -71,13 +73,24 @@ async function openPage({ role = 'user', configured = true } = {}) {
       serviceRequest: async ({ method, path, body }) => {
         const recorded = structuredClone(body);
         mock.requests.push({ method, path, body: recorded });
-        if (path === '/v1/auth/start') return ok({ flowId: 'test-flow', authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=test', expiresIn: 300 });
-        if (path === '/v1/auth/poll') return ok({ status: 'complete', token: 'test_session_token_123456789012345678901234567890', user: profile() });
+        if (path === '/v1/auth/register') {
+          mock.username = body.username; mock.password = body.password; mock.name = body.name || body.username;
+          return ok({ token: 'test_session_token_123456789012345678901234567890', user: profile(), expiresAt: Date.now() + 3600000 });
+        }
+        if (path === '/v1/auth/login') {
+          if (body.username !== mock.username || body.password !== mock.password) return error(401, 'invalid_credentials', '아이디 또는 비밀번호를 확인해 주세요.');
+          return ok({ token: 'test_session_token_123456789012345678901234567890', user: profile(), expiresAt: Date.now() + 3600000 });
+        }
         if (!mock.token || mock.expired) return error(401, 'UNAUTHORIZED', '로그인이 만료되었어요.');
         if (path === '/v1/me') return ok({ user: profile() });
         if (path === '/v1/logout') return ok({ ok: true });
+        if (path === '/v1/account/password') {
+          if (body.currentPassword !== mock.password) return error(403, 'invalid_credentials', '현재 비밀번호를 확인해 주세요.');
+          mock.password = body.newPassword;
+          return ok({ token: 'rotated_session_token_123456789012345678901234567890', user: profile(), expiresAt: Date.now() + 3600000 });
+        }
         if (path === '/v1/account' && method === 'DELETE') {
-          if (!body || typeof body !== 'object') return error(400, 'INVALID_JSON', 'JSON 요청 본문이 필요해요.');
+          if (body?.password !== mock.password) return error(403, 'invalid_credentials', '현재 비밀번호를 확인해 주세요.');
           return ok({ ok: true });
         }
         if (path === '/v1/game/sync') {
@@ -129,8 +142,10 @@ async function openSettings(page, tab = 'account') {
   await expect(page.locator(`#settings-${tab}`)).toBeVisible();
 }
 
-async function login(page) {
+async function login(page, password = fixturePassword, username = 'fixture_user') {
   await openSettings(page);
+  await page.locator('#account-username').fill(username);
+  await page.locator('#account-password').fill(password);
   await page.locator('#account-login').click();
   await expect(page.locator('#gold-text')).toHaveText('321');
   await expect(page.locator('#save-label')).toContainText('계정');
@@ -166,12 +181,22 @@ try {
   for (const asset of ['admin.js', 'admin.css']) {
     assert.equal((await page.request.get(`${url}/src/${asset}`)).status(), 404, `User preview does not expose ${asset}`);
   }
+  await page.locator('#account-username').fill('fixture_user');
+  await page.locator('#account-password').fill('incorrect-password');
+  await page.locator('#account-login').click();
+  await expect(page.locator('#account-error')).toContainText('아이디 또는 비밀번호');
+  await expect(page.locator('#account-password')).toHaveValue('');
+  await expect(page.locator('#gold-text')).toHaveText('120');
+  assert.equal(await page.evaluate(() => window.__service.token), null);
   await login(page);
   assert.equal((await guestSave(page)).gold, 120, 'Login keeps the guest save instead of replacing it with cloud state');
-  assert.equal(await page.evaluate(() => window.__service.openedURLs.length), 1, 'Login uses the system browser bridge');
+  assert.equal(await page.evaluate(() => window.__service.openedURLs.length), 0, 'ID/password login never opens an OAuth browser');
   const auth = await page.evaluate(() => window.__service.requests.filter(item => item.path.startsWith('/v1/auth/')));
-  assert.match(auth.find(item => item.path.endsWith('/start')).body.challenge, /^[A-Za-z0-9_-]{43}$/);
-  assert.match(auth.find(item => item.path.endsWith('/poll')).body.verifier, /^[A-Za-z0-9_-]{43}$/);
+  assert.ok(auth.every(item => item.path === '/v1/auth/login'));
+  assert.deepEqual(auth.at(-1).body, { username: 'fixture_user', password: fixturePassword });
+  await expect(page.locator('#account-password')).toHaveValue('');
+  await expect(page.locator('#account-email')).toContainText('fixture_user');
+  assert.equal(await page.evaluate(value => Object.keys(localStorage).some(key => localStorage.getItem(key).includes(value)), fixturePassword), false, 'Password is not saved in browser storage');
   await page.locator('#close-modal').click();
   await page.locator('[data-command="fight"]').click();
   await expect.poll(() => page.evaluate(() => window.__service.game.character.command)).toBe('fight');
@@ -245,15 +270,99 @@ try {
   await login(page);
   await page.locator('#account-delete').click();
   await expect(page.locator('#account-delete-panel')).toBeVisible();
+  await page.locator('#account-delete-password').fill(fixturePassword);
   await page.locator('#account-delete-confirm').click();
   await expect(page.locator('#gold-text')).toHaveText('120');
   const deletion = await page.evaluate(() => window.__service.requests.find(item => item.method === 'DELETE' && item.path === '/v1/account'));
-  assert.deepEqual(deletion.body, {}, 'Account deletion sends the JSON body required by the service');
+  assert.deepEqual(deletion.body, { password: fixturePassword }, 'Account deletion reauthenticates with the current password');
   assert.equal(await page.evaluate(() => window.__service.token), null);
   assert.equal((await guestSave(page)).gold, 120);
   assert.deepEqual(adminRequests, [], 'Account transitions never load admin resources in the user flavor');
   await page.close();
   console.log('✓ Account deletion confirms the destructive action, sends JSON, and preserves the independent guest save');
+
+  const registration = await openPage();
+  const registrationPage = registration.page;
+  await openSettings(registrationPage);
+  await registrationPage.locator('#account-auth-mode-register').click();
+  await expect(registrationPage.locator('#account-register')).toBeVisible();
+  const authCount = () => registrationPage.evaluate(() => window.__service.requests.filter(item => item.path.startsWith('/v1/auth/')).length);
+  await registrationPage.locator('#account-username').fill('Uppercase');
+  await registrationPage.locator('#account-password').fill(fixturePassword);
+  await registrationPage.locator('#account-password-confirm').fill(fixturePassword);
+  await registrationPage.locator('#account-register').click();
+  await expect(registrationPage.locator('#account-error')).toContainText('영문 소문자');
+  assert.equal(await authCount(), 0, 'Invalid username is rejected before credentials leave the form');
+  await expect(registrationPage.locator('#account-password')).toHaveValue('');
+  await expect(registrationPage.locator('#account-password-confirm')).toHaveValue('');
+  await registrationPage.locator('#account-username').fill('fixture_reg');
+  for (const password of ['가'.repeat(25), '😀'.repeat(11), 'a'.repeat(73)]) {
+    await registrationPage.locator('#account-password').fill(password);
+    await registrationPage.locator('#account-password-confirm').fill(password);
+    await registrationPage.locator('#account-register').click();
+    await expect(registrationPage.locator('#account-error')).toContainText('최대 72바이트');
+    assert.equal(await authCount(), 0, 'Password validation counts Unicode code points and UTF-8 bytes');
+    await expect(registrationPage.locator('#account-password')).toHaveValue('');
+  }
+  await registrationPage.locator('#account-password').fill(fixturePassword);
+  await registrationPage.locator('#account-password-confirm').fill(changedPassword);
+  await registrationPage.locator('#account-register').click();
+  await expect(registrationPage.locator('#account-error')).toContainText('일치하지');
+  assert.equal(await authCount(), 0, 'Confirmation mismatch cannot register');
+  await registrationPage.locator('#account-register-name').fill('새로운 모험가');
+  await registrationPage.locator('#account-password').fill(fixturePassword);
+  await registrationPage.locator('#account-password-confirm').fill(fixturePassword);
+  await registrationPage.locator('#account-register').click();
+  await expect(registrationPage.locator('#gold-text')).toHaveText('321');
+  await expect(registrationPage.locator('#account-name')).toHaveText('새로운 모험가');
+  const registered = await registrationPage.evaluate(() => window.__service.requests.find(item => item.path === '/v1/auth/register'));
+  assert.deepEqual(registered.body, { username: 'fixture_reg', password: fixturePassword, name: '새로운 모험가' });
+  await expect(registrationPage.locator('#account-password')).toHaveValue('');
+  assert.equal((await guestSave(registrationPage)).gold, 120, 'Registering preserves the guest game');
+
+  await registrationPage.locator('#account-password-open').click();
+  await registrationPage.locator('#account-current-password').fill('incorrect-password');
+  await registrationPage.locator('#account-new-password').fill(changedPassword);
+  await registrationPage.locator('#account-new-password-confirm').fill(changedPassword);
+  await registrationPage.locator('#account-password-submit').click();
+  await expect(registrationPage.locator('#account-error')).toContainText('현재 비밀번호');
+  await expect(registrationPage.locator('#account-current-password')).toHaveValue('');
+  await expect(registrationPage.locator('#account-new-password')).toHaveValue('');
+  assert.ok(await registrationPage.evaluate(() => window.__service.token), 'Failed reauthentication preserves the active session');
+  await registrationPage.locator('#account-current-password').fill(fixturePassword);
+  await registrationPage.locator('#account-new-password').fill(changedPassword);
+  await registrationPage.locator('#account-new-password-confirm').fill(changedPassword);
+  await registrationPage.locator('#account-password-submit').click();
+  await expect(registrationPage.locator('#account-password-panel')).toBeHidden();
+  await expect(registrationPage.locator('#account-message')).toContainText('비밀번호를 변경했어요');
+  await expect.poll(() => registrationPage.evaluate(() => window.__service.token)).toContain('rotated_session');
+  await expect(registrationPage.locator('#gold-text')).toHaveText('321');
+  const changed = await registrationPage.evaluate(() => window.__service.requests.filter(item => item.path === '/v1/account/password').at(-1));
+  assert.deepEqual(changed.body, { currentPassword: fixturePassword, newPassword: changedPassword });
+  await registrationPage.locator('#account-password-open').click();
+  await registrationPage.locator('#account-current-password').fill(changedPassword);
+  await registrationPage.locator('#close-modal').click();
+  await openSettings(registrationPage);
+  await registrationPage.locator('#account-password-open').click();
+  await expect(registrationPage.locator('#account-current-password')).toHaveValue('');
+  await registrationPage.locator('#account-password-cancel').click();
+  for (const password of [fixturePassword, changedPassword]) {
+    assert.equal(await registrationPage.evaluate(value => Object.keys(localStorage).some(key => localStorage.getItem(key).includes(value)), password), false);
+  }
+  await registrationPage.locator('#account-logout').click();
+  await login(registrationPage, changedPassword, 'fixture_reg');
+  await registrationPage.locator('#account-delete').click();
+  await registrationPage.locator('#account-delete-password').fill(fixturePassword);
+  await registrationPage.locator('#account-delete-confirm').click();
+  await expect(registrationPage.locator('#account-error')).toContainText('현재 비밀번호');
+  await expect(registrationPage.locator('#account-delete-password')).toHaveValue('');
+  await expect(registrationPage.locator('#gold-text')).toHaveText('321');
+  await registrationPage.locator('#account-delete-password').fill(changedPassword);
+  await registrationPage.locator('#account-delete-confirm').click();
+  await expect(registrationPage.locator('#gold-text')).toHaveText('120');
+  assert.equal(await registrationPage.evaluate(() => window.__service.token), null);
+  await registrationPage.close();
+  console.log('✓ Registration validates username/password/confirmation, password change rotates session, and sensitive fields clear after submit, errors and dispose');
 
   const privileged = await openPage({ role: 'admin' });
   await login(privileged.page);
@@ -271,7 +380,7 @@ try {
   assert.equal(await unconfigured.page.evaluate(() => window.__service.requests.length), 0, 'Unconfigured source never attempts login');
   await unconfigured.page.close();
   assert.deepEqual(rendererErrors, [], 'Player and account flows have no renderer errors');
-  console.log('User account UI integration passed with test-only transport; actual Google/Windows checks still require deployment.');
+  console.log('User account UI integration passed with test-only transport; actual hosting/Windows checks still require deployment.');
 } finally {
   await browser?.close();
   for (const server of servers) server.kill('SIGTERM');

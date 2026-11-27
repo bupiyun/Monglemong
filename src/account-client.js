@@ -1,6 +1,7 @@
 const MAX_JSON_BYTES = 30 * 1024 * 1024;
 const REQUEST_TIMEOUT = 20_000;
-const AUTH_PATHS = new Set(['/v1/auth/start', '/v1/auth/poll']);
+const AUTH_PATHS = new Set(['/v1/auth/register', '/v1/auth/login']);
+const USERNAME = /^[a-z][a-z0-9_]{3,31}$/;
 
 export class ServiceError extends Error {
   constructor(message, { status = 0, code = 'SERVICE_ERROR', data = null } = {}) {
@@ -25,38 +26,36 @@ export function normalizeServiceOrigin(value) {
 
 function safeUser(value) {
   if (!value || typeof value.id !== 'string' || !value.id || value.id.length > 200
-    || !['user', 'admin'].includes(value.role) || typeof value.email !== 'string') {
+    || !['user', 'admin'].includes(value.role) || typeof value.username !== 'string' || !USERNAME.test(value.username)
+    || typeof value.name !== 'string' || [...value.name].length > 40) {
     throw new ServiceError('계정 응답을 확인하지 못했어요. 다시 로그인해 주세요.', { code: 'INVALID_RESPONSE' });
   }
-  return { id: value.id, email: value.email.slice(0, 320), name: String(value.name || '').slice(0, 200), role: value.role };
-}
-
-function base64url(bytes) {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+  return { id: value.id, username: value.username, email: '', name: value.name, role: value.role };
 }
 
 function abortError() {
   return new ServiceError('로그인을 취소했어요.', { code: 'CANCELLED' });
 }
 
-function defaultSleep(milliseconds, signal) {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) { reject(abortError()); return; }
-    const cancel = () => { clearTimeout(timer); reject(abortError()); };
-    const timer = setTimeout(() => { signal?.removeEventListener('abort', cancel); resolve(); }, milliseconds);
-    signal?.addEventListener('abort', cancel, { once: true });
-  });
+function password(value) {
+  if (typeof value !== 'string' || [...value].length < 12 || new TextEncoder().encode(value).byteLength > 72 || value.includes('\0')) {
+    throw new ServiceError('비밀번호는 12자 이상, UTF-8 기준 72바이트 이하로 입력해 주세요.', { code: 'INVALID_PASSWORD' });
+  }
+  return value;
 }
 
-function validAuthorizationURL(value, origin) {
-  try {
-    const url = new URL(value);
-    if (url.username || url.password || url.hash) return false;
-    return (url.origin === 'https://accounts.google.com' && url.pathname === '/o/oauth2/v2/auth')
-      || (url.origin === origin && url.pathname === '/auth/google/start');
-  } catch { return false; }
+function credentials(input, registration) {
+  if (!input || typeof input.username !== 'string' || !USERNAME.test(input.username)) {
+    throw new ServiceError('아이디는 영문 소문자로 시작하는 4~32자의 영문 소문자·숫자·밑줄로 입력해 주세요.', { code: 'INVALID_USERNAME' });
+  }
+  const result = { username: input.username, password: password(input.password) };
+  if (registration && input.name !== undefined) {
+    if (typeof input.name !== 'string' || !input.name.trim() || [...input.name.trim()].length > 40) {
+      throw new ServiceError('이름은 1~40자로 입력해 주세요.', { code: 'INVALID_NAME' });
+    }
+    result.name = input.name.trim();
+  }
+  return result;
 }
 
 /**
@@ -66,8 +65,7 @@ function validAuthorizationURL(value, origin) {
  */
 export function createAccountClient({
   config = {}, desktop, onChange = () => {}, fetchImpl = globalThis.fetch?.bind(globalThis),
-  openLogin, cryptoImpl = globalThis.crypto, sleep = defaultSleep, now = Date.now,
-  pollIntervalMs = 1200,
+  cryptoImpl = globalThis.crypto, now = Date.now,
 } = {}) {
   const origin = normalizeServiceOrigin(config.apiBaseUrl);
   const native = typeof desktop?.serviceRequest === 'function';
@@ -81,7 +79,6 @@ export function createAccountClient({
   let disposed = false;
   let loginTask = null;
   let loginController = null;
-  let popup = null;
   let gameQueue = Promise.resolve();
   let syncTask = null;
   let credentialQueue = Promise.resolve();
@@ -220,84 +217,54 @@ export function createAccountClient({
     }
   }
 
-  async function performLogin(expected, controller, opener) {
+  function checkedSession(result) {
+    const profile = safeUser(result?.user);
+    if (typeof result?.token !== 'string' || !/^[A-Za-z0-9_-]{32,256}$/.test(result.token)
+      || !Number.isSafeInteger(result.expiresAt) || result.expiresAt <= now()) {
+      throw new ServiceError('로그인 세션을 확인하지 못했어요.', { code: 'INVALID_RESPONSE' });
+    }
+    return profile;
+  }
+
+  async function performLogin(expected, controller, path, body) {
     try {
-      const verifier = base64url(cryptoImpl.getRandomValues(new Uint8Array(32)));
-      const challenge = base64url(new Uint8Array(await cryptoImpl.subtle.digest('SHA-256', new TextEncoder().encode(verifier))));
+      const result = await transport('POST', path, body, { expected, signal: controller.signal });
+      const profile = checkedSession(result);
+      await writeCredential(result.token, expected);
       ensureCurrent(expected);
-      const flow = await transport('POST', '/v1/auth/start', { challenge }, { expected, signal: controller.signal });
-      if (typeof flow?.flowId !== 'string' || !flow.flowId || flow.flowId.length > 256
-        || !validAuthorizationURL(flow.authorizationUrl, origin)) {
-        throw new ServiceError('구글 로그인 연결을 확인하지 못했어요.', { code: 'INVALID_RESPONSE' });
-      }
-      ensureCurrent(expected);
-      await opener(flow.authorizationUrl);
-      const seconds = Number.isFinite(flow.expiresIn) ? Math.max(1, Math.min(300, flow.expiresIn)) : 300;
-      const deadline = now() + seconds * 1000;
-      const interval = Math.max(100, Math.min(5000, pollIntervalMs));
-      const attempts = Math.ceil(seconds * 1000 / interval) + 1;
-      for (let attempt = 0; attempt < attempts && now() < deadline; attempt += 1) {
-        ensureCurrent(expected);
-        if (controller.signal.aborted) throw abortError();
-        const result = await transport('POST', '/v1/auth/poll', { flowId: flow.flowId, verifier }, { expected, signal: controller.signal });
-        if (result?.status === 'complete') {
-          if (typeof result.token !== 'string' || !/^[A-Za-z0-9_-]{32,256}$/.test(result.token)) {
-            throw new ServiceError('로그인 세션을 확인하지 못했어요.', { code: 'INVALID_RESPONSE' });
-          }
-          await writeCredential(result.token, expected);
-          const profile = await transport('GET', '/v1/me', undefined, { expected, signal: controller.signal });
-          ensureCurrent(expected);
-          user = safeUser(profile?.user); revision = null;
-          status = 'authenticated'; lastError = ''; emit();
-          return { ...user };
-        }
-        if (result?.status !== 'pending') throw new ServiceError('구글 로그인이 완료되지 않았어요. 다시 시도해 주세요.', { code: 'LOGIN_FAILED' });
-        await sleep(interval, controller.signal);
-      }
-      throw new ServiceError('로그인 대기 시간이 끝났어요. 다시 시도해 주세요.', { code: 'LOGIN_EXPIRED' });
+      user = profile; revision = null;
+      status = 'authenticated'; lastError = ''; emit();
+      return { ...user };
     } catch (error) {
-      if (expected === epoch) await clearSession(expected, error.message || '구글 로그인에 실패했어요.');
+      if (expected === epoch) await clearSession(expected, error.message || '로그인하지 못했어요.');
       throw error;
     } finally {
-      if (loginController === controller) {
-        loginController = null;
-        try { popup?.close(); } catch {}
-        popup = null;
-      }
+      body.password = '';
+      if (loginController === controller) loginController = null;
     }
   }
 
-  function login() {
+  function authenticate(input, registration = false) {
     ensureConfigured();
     if (user) return Promise.resolve({ ...user });
     if (loginTask) return loginTask;
+    const body = credentials(input, registration);
     const expected = ++epoch;
     const controller = new AbortController();
     loginController = controller;
-    let opener = openLogin || (native ? url => desktop.openAccountLogin(url) : null);
-    if (!opener) {
-      // Open synchronously from the click so popup blockers can recognise the
-      // gesture. Navigation happens only after the API returns a validated URL.
-      popup = globalThis.window?.open('about:blank', '_blank');
-      if (!popup) {
-        loginController = null;
-        throw new ServiceError('로그인 창을 열 수 없어요. 팝업을 허용한 뒤 다시 시도해 주세요.', { code: 'POPUP_BLOCKED' });
-      }
-      popup.opener = null;
-      opener = url => { popup.location.href = url; };
-    }
     status = 'authenticating'; lastError = ''; emit();
-    const task = performLogin(expected, controller, opener);
+    const task = performLogin(expected, controller, registration ? '/v1/auth/register' : '/v1/auth/login', body);
     const wrapped = task.finally(() => { if (loginTask === wrapped) loginTask = null; });
     loginTask = wrapped;
     return wrapped;
   }
+  const login = input => authenticate(input);
+  const register = input => authenticate(input, true);
 
   async function cancelLogin() {
     if (!loginController) return;
     const expected = epoch;
     loginController.abort();
-    try { popup?.close(); } catch {}
     await clearSession(expected, '로그인을 취소했어요.');
   }
 
@@ -311,11 +278,34 @@ export function createAccountClient({
     return { revoked };
   }
 
-  async function deleteAccount() {
+  async function deleteAccount(input) {
+    const body = { password: password(input?.password) };
     const expected = epoch;
-    await transport('DELETE', '/v1/account', {}, { expected });
-    await clearSession(expected);
-    return { ok: true };
+    try {
+      await transport('DELETE', '/v1/account', body, { expected });
+      await clearSession(expected);
+      return { ok: true };
+    } finally { body.password = ''; }
+  }
+
+  function changePassword(input) {
+    const body = { currentPassword: password(input?.currentPassword), newPassword: password(input?.newPassword) };
+    // Complete an in-flight game request before rotating its authentication.
+    return queueGame(async expected => {
+      try {
+        if (!user) throw new ServiceError('먼저 로그인해 주세요.', { code: 'AUTH_REQUIRED' });
+        const result = await transport('POST', '/v1/account/password', body, { expected });
+        const profile = checkedSession(result);
+        if (profile.id !== user.id) throw new ServiceError('계정 응답을 확인하지 못했어요.', { code: 'INVALID_RESPONSE' });
+        // Old in-flight requests cannot invalidate the newly rotated session.
+        const renewed = ++epoch;
+        try { await writeCredential(result.token, renewed); }
+        catch (error) { if (renewed === epoch) await clearSession(renewed, '다시 로그인해 주세요.'); throw error; }
+        ensureCurrent(renewed);
+        user = profile; status = 'authenticated'; lastError = ''; emit();
+        return { ...user };
+      } finally { body.currentPassword = ''; body.newPassword = ''; }
+    });
   }
 
   function presenceBody(presence) {
@@ -417,11 +407,10 @@ export function createAccountClient({
     get revision() { return revision; }, get configured() { return Boolean(origin); },
     getSession: snapshot,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    initialize, login, cancelLogin, logout, deleteAccount, request, syncGame, gameAction, fetchSprite,
+    initialize, login, register, cancelLogin, logout, deleteAccount, changePassword, request, syncGame, gameAction, fetchSprite,
     dispose() {
       disposed = true; epoch += 1; loginController?.abort(); browserToken = null;
-      try { popup?.close(); } catch {}
-      popup = null; listeners.clear();
+      listeners.clear();
     },
   };
 }

@@ -6,9 +6,10 @@ import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
-import { prepareClient, variantManifest } from '../scripts/prepare-client.mjs';
+import { prepareClient, resolveClientApiBaseUrl, variantManifest } from '../scripts/prepare-client.mjs';
 import { createPreviewServer } from '../scripts/serve.mjs';
 import { assertRuntimeMembers } from '../scripts/verify-windows-package.mjs';
+import { RUNTIME_CONFIG } from '../src/runtime-config.js';
 
 const require = createRequire(import.meta.url);
 const { normalizeApiBaseUrl, createSessionVault, createServiceBridge, validateRequest, readRuntimeConfig } = require('../electron/service-bridge.cjs');
@@ -16,7 +17,14 @@ const root = resolve(import.meta.dirname, '..');
 const source = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 const token = 'a'.repeat(43);
 const otherToken = 'b'.repeat(43);
-const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?state=example&client_id=example';
+
+function restoreApiEnvironment(t) {
+  const previous = process.env.MONGLEMONG_API_URL;
+  t.after(() => {
+    if (previous === undefined) delete process.env.MONGLEMONG_API_URL;
+    else process.env.MONGLEMONG_API_URL = previous;
+  });
+}
 
 function temporary(t) {
   const directory = mkdtempSync(join(tmpdir(), 'monglemong-variants-'));
@@ -42,6 +50,63 @@ function fixture(t) {
   return projectRoot;
 }
 
+test('the checked-in service origin reaches default prepared source and its browser policy', async t => {
+  restoreApiEnvironment(t);
+  delete process.env.MONGLEMONG_API_URL;
+  const sourceConfig = JSON.parse(readFileSync(join(root, 'src/runtime-config.json'), 'utf8'));
+  assert.deepEqual(RUNTIME_CONFIG, sourceConfig, 'direct source and Electron use the same nonsecret configuration');
+  assert.equal(sourceConfig.flavor, 'user');
+  assert.equal(new URL(sourceConfig.apiBaseUrl).protocol, 'https:');
+  const user = prepareClient({ projectRoot: fixture(t) });
+  assert.deepEqual(user.config, sourceConfig);
+  assert.deepEqual(readRuntimeConfig(user.directory), sourceConfig);
+  const moduleText = readFileSync(join(user.directory, 'src/runtime-config.js'), 'utf8');
+  assert.deepEqual((await import('data:text/javascript,' + encodeURIComponent(moduleText))).RUNTIME_CONFIG, sourceConfig);
+  const html = readFileSync(join(user.directory, 'index.html'), 'utf8');
+  assert.ok(html.includes(`connect-src 'self' ${sourceConfig.apiBaseUrl};`));
+  assert.deepEqual(Object.keys(user.config).sort(), ['apiBaseUrl', 'flavor']);
+});
+
+test('environment and explicit service overrides preserve local and empty guest-only configurations', t => {
+  restoreApiEnvironment(t);
+  const projectRoot = fixture(t);
+  process.env.MONGLEMONG_API_URL = 'http://localhost:8787';
+  assert.equal(prepareClient({ projectRoot }).config.apiBaseUrl, 'http://localhost:8787');
+  assert.equal(prepareClient({ projectRoot, apiBaseUrl: 'https://override.example' }).config.apiBaseUrl, 'https://override.example');
+  process.env.MONGLEMONG_API_URL = '';
+  const guest = prepareClient({ projectRoot });
+  assert.equal(guest.config.apiBaseUrl, '');
+  assert.match(readFileSync(join(guest.directory, 'index.html'), 'utf8'), /connect-src 'self' https:\/\/monglemong\.kr;/, 'Guest-only builds can still request public update metadata');
+  assert.deepEqual(readRuntimeConfig(guest.directory), { flavor: 'user', apiBaseUrl: '' });
+  process.env.MONGLEMONG_API_URL = 'https://override.example';
+  assert.equal(prepareClient({ projectRoot, apiBaseUrl: '' }).config.apiBaseUrl, '');
+  process.env.MONGLEMONG_API_URL = 'http://monglemong.kr';
+  assert.throws(() => prepareClient({ projectRoot }), /HTTPS/);
+  delete process.env.MONGLEMONG_API_URL;
+  writeFileSync(join(projectRoot, 'src/runtime-config.json'), JSON.stringify({ flavor: 'user', apiBaseUrl: 'http://monglemong.kr' }));
+  assert.throws(() => resolveClientApiBaseUrl(projectRoot), /HTTPS/);
+});
+
+test('preview uses the same default and overridden origins as preparation without contacting production', async t => {
+  restoreApiEnvironment(t);
+  const projectRoot = fixture(t);
+  for (const [override, expected] of [[undefined, RUNTIME_CONFIG.apiBaseUrl], ['http://127.0.0.1:8787', 'http://127.0.0.1:8787'], ['', '']]) {
+    if (override === undefined) delete process.env.MONGLEMONG_API_URL;
+    else process.env.MONGLEMONG_API_URL = override;
+    const server = createPreviewServer({ projectRoot });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise(resolve => server.close(resolve)));
+    const base = 'http://127.0.0.1:' + server.address().port;
+    const moduleText = await (await fetch(base + '/src/runtime-config.js')).text();
+    const config = (await import('data:text/javascript,' + encodeURIComponent(moduleText))).RUNTIME_CONFIG;
+    assert.deepEqual(config, { flavor: 'user', apiBaseUrl: expected });
+    const html = await (await fetch(base + '/')).text();
+    const origins = html.match(/connect-src 'self' ([^;]+);/)[1].split(' ');
+    assert.deepEqual(origins, [...new Set([expected, 'https://monglemong.kr'].filter(Boolean))]);
+    assert.deepEqual(config, prepareClient({ projectRoot }).config);
+  }
+});
+
 test('prepared user source preserves identity and excludes privileged or private runtime files', t => {
   const projectRoot = fixture(t);
   const user = prepareClient({ projectRoot, flavor: 'user', apiBaseUrl: 'https://game.example.com/' });
@@ -51,7 +116,7 @@ test('prepared user source preserves identity and excludes privileged or private
   assert.deepEqual(JSON.parse(readFileSync(join(user.directory, 'src/runtime-config.json'), 'utf8')), user.config);
   assert.equal(user.config.flavor, 'user');
   assert.equal(user.config.apiBaseUrl, 'https://game.example.com');
-  assert.match(readFileSync(join(user.directory, 'index.html'), 'utf8'), /connect-src 'self' https:\/\/game\.example\.com;/);
+  assert.match(readFileSync(join(user.directory, 'index.html'), 'utf8'), /connect-src 'self' https:\/\/game\.example\.com https:\/\/monglemong\.kr;/);
   for (const forbidden of ['server', '.env', 'src/.env', 'node_modules', 'assets/characters/unreleased.png', 'src/admin.js', 'src/admin.css']) {
     assert.equal(existsSync(join(user.directory, forbidden)), false, forbidden);
   }
@@ -129,7 +194,7 @@ test('preview exposes only user runtime resources and the configured service ori
   writeFileSync(join(projectRoot, 'src', 'admin.js'), 'must-not-ship');
   writeFileSync(join(projectRoot, 'src', 'private-helper.js'), 'must-not-ship');
   writeFileSync(join(projectRoot, 'assets', 'characters', 'unreleased.png'), 'must-not-ship');
-  assert.match(await (await fetch(base + '/')).text(), /connect-src 'self' https:\/\/game\.example\.com;/);
+  assert.match(await (await fetch(base + '/')).text(), /connect-src 'self' https:\/\/game\.example\.com https:\/\/monglemong\.kr;/);
   const config = await (await fetch(base + '/src/runtime-config.js')).text();
   assert.match(config, /"flavor":"user"/);
   assert.match(config, /"apiBaseUrl":"https:\/\/game.example.com"/);
@@ -214,9 +279,10 @@ test('the transport rejects external paths, traversal and unsupported methods', 
   }
   assert.throws(() => validateRequest({ method: 'PATCH', path: '/v1/me' }));
   assert.throws(() => validateRequest({ method: 'GET', path: '/v1/me', body: { token } }));
-  assert.deepEqual(validateRequest({ method: 'POST', path: '/v1/auth/poll', body: { verifier: 'x' } }), {
-    method: 'POST', route: '/v1/auth/poll', serialized: '{"verifier":"x"}',
+  assert.deepEqual(validateRequest({ method: 'POST', path: '/v1/auth/login', body: { username: 'player', password: 'fixture-password' } }), {
+    method: 'POST', route: '/v1/auth/login', serialized: '{"username":"player","password":"fixture-password"}',
   });
+  for (const path of ['/v1/auth/start', '/v1/auth/poll']) assert.throws(() => validateRequest({ method: 'POST', path, body: {} }));
 });
 
 test('changing runtime config cannot enable privileged transport', async t => {
@@ -244,7 +310,7 @@ test('authenticated API traffic stays on the configured origin and sprite bytes 
       return url.endsWith('/sprite') ? new Response(new Uint8Array([0, 1, 2, 255]), { headers: { 'content-type': 'image/png' } })
         : Response.json({ ok: true });
     } });
-  await bridge.serviceRequest({ method: 'POST', path: '/v1/auth/start', body: { challenge: 'x' } });
+  await bridge.serviceRequest({ method: 'POST', path: '/v1/auth/login', body: { username: 'player', password: 'fixture-password' } });
   await bridge.serviceRequest({ method: 'GET', path: '/v1/me' });
   const image = await bridge.serviceRequest({ method: 'GET', path: '/v1/characters/custom_123/sprite' });
   assert.equal(requests[0].options.headers.Authorization, undefined);
@@ -256,21 +322,22 @@ test('authenticated API traffic stays on the configured origin and sprite bytes 
   await assert.rejects(bridge.serviceRequest({ method: 'GET', path: 'https://evil.example/v1/me' }));
 });
 
-test('only a fresh Google URL from the trusted login response can open a browser once', async () => {
-  const opened = [];
-  let now = 1;
+test('registration stays anonymous while password changes and deletion require the current session', async () => {
+  const requests = [];
   const bridge = createServiceBridge({ config: { apiBaseUrl: 'https://game.example.com' },
-    vault: { has: () => false, get: () => null, set: () => {} }, clock: () => now,
-    fetchImpl: async () => Response.json({ authorizationUrl: authUrl }), openExternal: url => { opened.push(url); } });
-  await assert.rejects(bridge.openAccountLogin(authUrl));
-  await bridge.serviceRequest({ method: 'POST', path: '/v1/auth/start' });
-  await assert.rejects(bridge.openAccountLogin('https://evil.example/'));
-  await bridge.openAccountLogin(authUrl);
-  assert.deepEqual(opened, [authUrl]);
-  await assert.rejects(bridge.openAccountLogin(authUrl));
-  await bridge.serviceRequest({ method: 'POST', path: '/v1/auth/start' });
-  now += 300_001;
-  await assert.rejects(bridge.openAccountLogin(authUrl));
+    vault: { has: () => true, get: () => token, set: () => {} },
+    fetchImpl: async (url, options) => { requests.push({ url, options }); return Response.json({ ok: true }); } });
+  await bridge.serviceRequest({ method: 'POST', path: '/v1/auth/register', body: { username: 'player', password: 'fixture-password' } });
+  await bridge.serviceRequest({ method: 'POST', path: '/v1/account/password', body: { currentPassword: 'fixture-password', newPassword: 'replacement-password' } });
+  await bridge.serviceRequest({ method: 'DELETE', path: '/v1/account', body: { password: 'replacement-password' } });
+  assert.equal(requests[0].options.headers.Authorization, undefined);
+  assert.equal(requests[1].options.headers.Authorization, `Bearer ${token}`);
+  assert.equal(requests[2].options.headers.Authorization, `Bearer ${token}`);
+  assert.equal(requests[2].options.method, 'DELETE');
+  assert.equal(JSON.parse(requests[1].options.body).newPassword, 'replacement-password');
+  assert.equal(bridge.openAccountLogin, undefined, 'credential login must never open an external authorization page');
+  for (const path of ['/v1/auth/start', '/v1/auth/poll']) await assert.rejects(bridge.serviceRequest({ method: 'POST', path }));
+  assert.equal(requests.length, 3);
 });
 
 test('an unconfigured or unreachable service fails clearly without exposing transport diagnostics', async () => {

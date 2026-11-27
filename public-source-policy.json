@@ -37,6 +37,7 @@
     "electron/native/window-surfaces.ps1",
     "electron/preload.cjs",
     "electron/service-bridge.cjs",
+    "electron/update-service.cjs",
     "electron/window-surfaces.cjs",
     "index.html",
     "package-lock.json",
@@ -49,6 +50,7 @@
     "scripts/generate-icon.mjs",
     "scripts/install-git-hooks.mjs",
     "scripts/prepare-client.mjs",
+    "scripts/prepare-update.mjs",
     "scripts/serve.mjs",
     "scripts/start-client.mjs",
     "scripts/verify-windows-package.mjs",
@@ -68,6 +70,8 @@
     "src/sprite-storage.js",
     "src/sprites.js",
     "src/styles.css",
+    "src/update-manifest.js",
+    "src/updates.js",
     "src/warehouse.css",
     "src/warehouse.js",
     "src/world.css",
@@ -92,6 +96,7 @@
     "tests/sprite-storage.mjs",
     "tests/sprites.test.js",
     "tests/ui.mjs",
+    "tests/updates.test.js",
     "tests/window-surfaces.test.js"
   ]
 }

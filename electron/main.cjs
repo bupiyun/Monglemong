@@ -8,6 +8,7 @@ const { createHash } = require('node:crypto');
 const { buildSurfaceSnapshot, createWindowSurfaceTracker } = require('./window-surfaces.cjs');
 const { buildDisplayLayout, desktopBounds, pointInDisplays } = require('./display-layout.cjs');
 const { readRuntimeConfig, createSessionVault, createServiceBridge } = require('./service-bridge.cjs');
+const { createUpdateService } = require('./update-service.cjs');
 
 const PAGE = path.resolve(__dirname, '..', 'index.html');
 const PAGE_URL = pathToFileURL(PAGE).href;
@@ -25,6 +26,7 @@ let ignoresMouse = null;
 let startupFailed = false;
 let surfaceTracker;
 let serviceBridge;
+let updateService;
 let displayLayout;
 
 function showStartupError(error) {
@@ -258,10 +260,17 @@ ipcMain.on('desktop:quit', event => {
   if (isOurRenderer(event)) app.quit();
 });
 
-for (const method of ['serviceRequest', 'setAccountSession', 'getAccountSession', 'openAccountLogin']) {
+for (const method of ['serviceRequest', 'setAccountSession', 'getAccountSession']) {
   ipcMain.handle(`desktop:${method}`, (event, argument) => {
     if (!isOurRenderer(event) || !serviceBridge) throw new Error('허용되지 않은 서비스 요청이에요.');
     return serviceBridge[method](argument);
+  });
+}
+
+for (const method of ['checkUpdates', 'openUpdateDownload']) {
+  ipcMain.handle(`desktop:${method}`, event => {
+    if (!isOurRenderer(event) || !updateService) throw new Error('허용되지 않은 업데이트 요청이에요.');
+    return updateService[method]();
   });
 }
 
@@ -273,7 +282,9 @@ if (!app.requestSingleInstanceLock()) {
     if (process.platform === 'win32') app.setAppUserModelId('studio.mori.desktop');
     const originHash = createHash('sha256').update(runtimeConfig.apiBaseUrl).digest('hex').slice(0, 24);
     const vault = createSessionVault({ file: path.join(app.getPath('userData'), `account-session-${originHash}.bin`), safeStorage });
-    serviceBridge = createServiceBridge({ config: runtimeConfig, vault, openExternal: url => shell.openExternal(url) });
+    serviceBridge = createServiceBridge({ config: runtimeConfig, vault });
+    updateService = createUpdateService({ currentVersion: app.getVersion(), flavor: runtimeConfig.flavor,
+      openExternal: url => shell.openExternal(url) });
     createWindow();
     tray = new Tray(makeTrayIcon());
     tray.setToolTip(`${appLabel} · Ctrl/⌘ + Shift + M`);

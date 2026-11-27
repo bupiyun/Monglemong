@@ -2,6 +2,7 @@ import { CORE_TYPES, CHARACTER_TYPES, FOOD_GROUPS, TASTES, FOODS, ITEM_TYPES, MO
 import { RUNTIME_CONFIG } from './runtime-config.js';
 import { createAccountClient } from './account-client.js';
 import { mountAccountPanel } from './account-ui.js';
+import { mountUpdatesPanel } from './updates.js';
 import { applyCharacterSprite, setSpriteSheet, preloadBundledSprites, getCharacterFootInset } from './sprites.js';
 import { getSpriteSheet, deleteSpriteSheet } from './sprite-storage.js';
 import { createWarehouseUI } from './warehouse.js';
@@ -31,6 +32,7 @@ let modalCompanionId = null;
 let uiTab = 'cores';
 let customDock = false;
 let accountPanel = null;
+let updatesPanel = null;
 let settingsGeneration = 0;
 let cloudActive = false;
 let cloudBlocked = false;
@@ -787,6 +789,7 @@ $('world').addEventListener('click', e => {
 
 function openModal(title, content) {
   accountPanel?.dispose(); accountPanel = null;
+  updatesPanel?.dispose(); updatesPanel = null;
   settingsGeneration += 1;
   modalCompanionId = null;
   $('modal').classList.remove('companion-dialog', 'settings-dialog');
@@ -823,16 +826,25 @@ function openTalk() {
   $('talk-input').focus();
 }
 function openSettings(initialTab = 'general') {
-  const tabs = ['general', 'account'];
-  openModal('우리의 작은 공간', `<div class="settings-tabs" role="tablist" aria-label="설정 메뉴"><button type="button" id="settings-general-tab" role="tab" aria-selected="true" aria-controls="settings-general">일반</button><button type="button" id="settings-account-tab" role="tab" aria-selected="false" aria-controls="settings-account" tabindex="-1">계정</button></div><section id="settings-general" class="settings-panel" role="tabpanel" aria-labelledby="settings-general-tab"><div class="settings-row"><span>초원 배경<small>${desktop ? '끄면 실제 바탕화면 위에서 놀아요' : '브라우저에서는 단색 배경으로 전환해요'}</small></span><button id="setting-scene">${sceneMode ? '켜짐' : '꺼짐'}</button></div><div class="settings-row character-size-setting"><span>캐릭터 크기<small>1배는 기존 크기 · 기본값은 2배</small></span><div class="scale-options" role="group" aria-label="캐릭터 크기">${[1,2,3].map(scale => `<button type="button" data-character-scale="${scale}" aria-pressed="${characterScale() === scale}">${scale}배</button>`).join('')}</div></div><div class="settings-row"><label for="window-walking-toggle">창 위에서 걷기<small id="window-walking-status">${surfaceStatusText()}</small></label><input type="checkbox" id="window-walking-toggle" ${state.settings.windowWalking ? 'checked' : ''}></div><div class="settings-row"><span>모션 줄이기<small>픽셀 애니메이션을 쉬게 해요</small></span><button id="setting-motion">${document.body.classList.contains('reduced-motion') ? '켜짐' : '꺼짐'}</button></div><div class="settings-row"><span>게임 진행<small>잠깐 쉬어 가고 싶을 때</small></span><button id="setting-pause">${paused ? '계속하기' : '일시 정지'}</button></div><p class="talk-hint">${cloudActive ? '계정 모험은 서버에 자동 저장돼요. 기기의 모험은 별도로 보관해요.' : '이 기기의 모험을 플레이 중이에요. 계정 탭에서 온라인 모험에 로그인할 수 있어요.'}</p>${desktop ? '<button class="secondary-button full" id="quit-game">저장하고 종료</button>' : ''}<button class="danger-button" id="reset-game">처음부터 다시 시작하기</button></section><section id="settings-account" class="settings-panel" role="tabpanel" aria-labelledby="settings-account-tab" hidden></section>`);
+  const tabs = ['general', 'account', 'updates'];
+  openModal('우리의 작은 공간', `<div class="settings-tabs" role="tablist" aria-label="설정 메뉴"><button type="button" id="settings-general-tab" role="tab" aria-selected="true" aria-controls="settings-general">일반</button><button type="button" id="settings-account-tab" role="tab" aria-selected="false" aria-controls="settings-account" tabindex="-1">계정</button><button type="button" id="settings-updates-tab" role="tab" aria-selected="false" aria-controls="settings-updates" tabindex="-1">업데이트</button></div><section id="settings-general" class="settings-panel" role="tabpanel" aria-labelledby="settings-general-tab"><div class="settings-row"><span>초원 배경<small>${desktop ? '끄면 실제 바탕화면 위에서 놀아요' : '브라우저에서는 단색 배경으로 전환해요'}</small></span><button id="setting-scene">${sceneMode ? '켜짐' : '꺼짐'}</button></div><div class="settings-row character-size-setting"><span>캐릭터 크기<small>1배는 기존 크기 · 기본값은 2배</small></span><div class="scale-options" role="group" aria-label="캐릭터 크기">${[1,2,3].map(scale => `<button type="button" data-character-scale="${scale}" aria-pressed="${characterScale() === scale}">${scale}배</button>`).join('')}</div></div><div class="settings-row"><label for="window-walking-toggle">창 위에서 걷기<small id="window-walking-status">${surfaceStatusText()}</small></label><input type="checkbox" id="window-walking-toggle" ${state.settings.windowWalking ? 'checked' : ''}></div><div class="settings-row"><span>모션 줄이기<small>픽셀 애니메이션을 쉬게 해요</small></span><button id="setting-motion">${document.body.classList.contains('reduced-motion') ? '켜짐' : '꺼짐'}</button></div><div class="settings-row"><span>게임 진행<small>잠깐 쉬어 가고 싶을 때</small></span><button id="setting-pause">${paused ? '계속하기' : '일시 정지'}</button></div><p class="talk-hint">${cloudActive ? '계정 모험은 서버에 자동 저장돼요. 기기의 모험은 별도로 보관해요.' : '이 기기의 모험을 플레이 중이에요. 계정 탭에서 온라인 모험에 로그인할 수 있어요.'}</p>${desktop ? '<button class="secondary-button full" id="quit-game">저장하고 종료</button>' : ''}<button class="danger-button" id="reset-game">처음부터 다시 시작하기</button></section><section id="settings-account" class="settings-panel" role="tabpanel" aria-labelledby="settings-account-tab" hidden></section><section id="settings-updates" class="settings-panel" role="tabpanel" aria-labelledby="settings-updates-tab" hidden></section>`);
   $('modal').classList.add('settings-dialog');
   const generation = settingsGeneration;
   accountPanel = mountAccountPanel($('settings-account'), {
     client: account, getPlayMode: () => cloudActive ? 'online' : 'guest',
-    onLogin: async () => {
-      await account.login(); await activateCloudGame();
+    onLogin: async credentials => {
+      await account.login(credentials); await activateCloudGame();
       if (generation === settingsGeneration && $('modal').open) openSettings('account');
       notify('온라인 계정의 모험을 불러왔어요.');
+    },
+    onRegister: async credentials => {
+      await account.register(credentials); await activateCloudGame();
+      if (generation === settingsGeneration && $('modal').open) openSettings('account');
+      notify('계정을 만들고 온라인 모험을 시작했어요.');
+    },
+    onChangePassword: async credentials => {
+      await account.changePassword(credentials);
+      notify('비밀번호를 변경했어요. 다른 기기의 로그인은 해제돼요.');
     },
     onLogout: async () => {
       if (!cloudActive && !save()) throw new Error('기기의 모험을 저장하지 못했어요. 저장 공간을 확인해 주세요.');
@@ -846,12 +858,13 @@ function openSettings(initialTab = 'general') {
       else await syncCloudGame();
       if (cloudBlocked) throw new Error('서버에 연결하지 못했어요. 잠시 뒤 다시 시도해 주세요.');
     },
-    onDelete: async () => {
+    onDelete: async credentials => {
       if (!cloudActive && !save()) throw new Error('기기의 모험을 저장하지 못했어요. 저장 공간을 확인해 주세요.');
-      await account.deleteAccount(); await restoreGuestGame();
+      await account.deleteAccount(credentials); await restoreGuestGame();
       openSettings('account'); notify('온라인 계정과 진행도를 삭제했어요. 기기의 모험은 유지돼요.');
     },
   });
+  updatesPanel = mountUpdatesPanel($('settings-updates'), { desktop, version: document.querySelector('.version-tag b').textContent.trim() });
   function settingsTab(name) {
     for (const tab of tabs) {
       const active = tab === name;
@@ -933,7 +946,7 @@ $('minimize-button').onclick = () => toggleMenu(false);
 $('cancel-placement').onclick = cancelPlacement;
 $('close-character').onclick = () => {$('character-menu').hidden = true;reportRegions();};
 $('close-modal').onclick = () => $('modal').close();
-$('modal').addEventListener('close', () => {if ($('modal').open) return;settingsGeneration += 1;accountPanel?.dispose();accountPanel=null;modalCompanionId=null;reportRegions();});
+$('modal').addEventListener('close', () => {if ($('modal').open) return;settingsGeneration += 1;accountPanel?.dispose();accountPanel=null;updatesPanel?.dispose();updatesPanel=null;modalCompanionId=null;reportRegions();});
 $('help-button').onclick = openHelp;$('guide-link').onclick = openHelp;
 $('shop-button').onclick = openShop;$('settings-button').onclick = openSettings;
 function careAction(type, value) {

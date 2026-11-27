@@ -76,7 +76,7 @@ test('one native window publishes topology, keeps drag capture across monitors a
   const windows = [];
   const trackerGeometries = [];
   const app = Object.assign(new EventEmitter(), {
-    getPath: () => '/tmp/monglemong-native-test', setPath() {}, requestSingleInstanceLock: () => true,
+    getPath: () => '/tmp/monglemong-native-test', getVersion: () => '0.11.0', setPath() {}, requestSingleInstanceLock: () => true,
     whenReady: () => Promise.resolve(), setAppUserModelId() {}, quit() {},
     exit() { throw new Error('unexpected startup error'); },
   });
@@ -84,7 +84,9 @@ test('one native window publishes topology, keeps drag capture across monitors a
     getPrimaryDisplay: () => displays[0], getAllDisplays: () => displays,
     getCursorScreenPoint: () => cursor, screenToDipRect: (_window, value) => value, dipToScreenRect: (_window, value) => value,
   });
-  const ipcMain = Object.assign(new EventEmitter(), { handle() {} });
+  const handlers = new Map();
+  const updateCalls = [];
+  const ipcMain = Object.assign(new EventEmitter(), { handle(name, callback) { handlers.set(name, callback); } });
   class BrowserWindow extends EventEmitter {
     constructor(options) {
       super();
@@ -126,6 +128,10 @@ test('one native window publishes topology, keeps drag capture across monitors a
       if (name === 'node:fs') return { mkdirSync() {} };
       if (name === './window-surfaces.cjs') return collector;
       if (name === './display-layout.cjs') return require('../electron/display-layout.cjs');
+      if (name === './update-service.cjs') return { createUpdateService: options => ({
+        checkUpdates: () => { updateCalls.push(['check', options.currentVersion]); return { available: false }; },
+        openUpdateDownload: (...args) => { updateCalls.push(['open', ...args]); return true; },
+      }) };
       if (name === './service-bridge.cjs') return {
         readRuntimeConfig: () => ({ apiBaseUrl: '' }), createSessionVault() {}, createServiceBridge: () => ({}),
       };
@@ -139,6 +145,11 @@ test('one native window publishes topology, keeps drag capture across monitors a
   window.emit('ready-to-show');
   assert.equal(window.sent.at(-1).channel, 'desktop:displays');
   const sender = { sender: window.webContents, senderFrame: window.webContents.mainFrame };
+  assert.throws(() => handlers.get('desktop:checkUpdates')({ sender: {} }), /허용되지/);
+  assert.throws(() => handlers.get('desktop:openUpdateDownload')({ sender: {} }), /허용되지/);
+  handlers.get('desktop:checkUpdates')(sender);
+  handlers.get('desktop:openUpdateDownload')(sender, 'https://untrusted.example/installer.exe');
+  assert.deepEqual(updateCalls, [['check', '0.11.0'], ['open']], 'native update IPC never accepts a renderer download URL');
   ipcMain.emit('desktop:request-displays', sender);
   assert.equal(window.sent.at(-1).value.displays.length, 3);
   const messages = window.sent.length;

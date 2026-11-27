@@ -1,39 +1,35 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomBytes, createHash } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { createAccountClient, normalizeServiceOrigin, ServiceError } from '../src/account-client.js';
 
 const config = { flavor: 'user', apiBaseUrl: 'https://game.example' };
-const profile = { id: 'player-a', email: 'player@example.test', name: '모험가', role: 'user' };
+const profile = { id: 'player-a', username: 'player_a', email: '', name: '모험가', role: 'user' };
+const credentials = { username: 'player_a', password: 'fixture-password-123' };
 const sessionToken = () => randomBytes(32).toString('base64url');
+const session = (token = sessionToken(), user = profile) => ({ token, user, expiresAt: Date.now() + 60_000 });
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 
 function browserHarness(extra = {}) {
   const calls = [];
-  const opened = [];
   const token = sessionToken();
-  let challenge;
   let custom;
   const fetchImpl = async (url, options) => {
     const path = new URL(url).pathname;
     const body = options.body ? JSON.parse(options.body) : undefined;
     calls.push({ path, body, options });
-    if (path === '/v1/auth/start') {
-      challenge = body.challenge;
-      return json({ flowId: 'flow-a', authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=public-id', expiresIn: 300 });
+    if (custom) {
+      const result = await custom(path, body, options);
+      if (result !== undefined) return result;
     }
-    if (path === '/v1/auth/poll') {
-      assert.equal(createHash('sha256').update(body.verifier).digest('base64url'), challenge, 'the poll secret proves the originating app challenge');
-      return json({ status: 'complete', token, user: profile });
-    }
-    if (custom) return custom(path, body, options);
+    if (path === '/v1/auth/login' || path === '/v1/auth/register') return json(session(token));
     if (path === '/v1/me') return json({ user: profile });
     if (path === '/v1/logout' || path === '/v1/account') return json({ ok: true });
     return json({ error: { code: 'NOT_FOUND', message: '찾을 수 없어요.' } }, 404);
   };
-  const client = createAccountClient({ config, fetchImpl, openLogin: async url => { opened.push(url); }, ...extra });
-  return { client, calls, opened, token, respond(handler) { custom = handler; } };
+  const client = createAccountClient({ config, fetchImpl, ...extra });
+  return { client, calls, token, respond(handler) { custom = handler; } };
 }
 
 test('service origins allow HTTPS and loopback development, never credentials or alternate paths', () => {
@@ -50,30 +46,71 @@ test('an unconfigured build remains guest-only without performing a fake login',
   const client = createAccountClient({ config: {}, fetchImpl: () => { calls++; } });
   assert.equal(client.status, 'unconfigured');
   assert.equal(await client.initialize(), null);
-  assert.throws(() => client.login(), error => error.code === 'NOT_CONFIGURED');
+  assert.throws(() => client.login(credentials), error => error.code === 'NOT_CONFIGURED');
   assert.equal(calls, 0);
 });
 
-test('browser login uses a PKCE-bound poll and keeps credentials out of snapshots and web storage', async () => {
+test('credential login sends one direct request and keeps credentials out of snapshots and web storage', async () => {
   const changes = [];
   const run = browserHarness({ onChange: snapshot => changes.push(snapshot) });
-  assert.deepEqual(await run.client.login(), profile);
+  assert.deepEqual(await run.client.login(credentials), profile);
   assert.equal(run.client.status, 'authenticated');
-  assert.equal(run.opened.length, 1);
-  const me = run.calls.find(call => call.path === '/v1/me');
-  assert.equal(me.options.headers.Authorization, `Bearer ${run.token}`);
-  assert.equal(me.options.credentials, 'omit');
-  assert.equal(me.options.redirect, 'error');
+  assert.deepEqual(run.calls[0].body, credentials);
+  assert.equal(run.calls[0].path, '/v1/auth/login');
   assert.equal(run.calls[0].options.headers.Authorization, undefined);
-  assert.equal(run.calls[1].options.headers.Authorization, undefined);
-  assert.ok(!JSON.stringify(changes).includes(run.token));
-  assert.ok(!JSON.stringify(run.client.getSession()).includes(run.token));
+  assert.equal(run.calls[0].options.credentials, 'omit');
+  assert.equal(run.calls[0].options.redirect, 'error');
+  await run.client.request('GET', '/v1/me');
+  assert.equal(run.calls[1].options.headers.Authorization, `Bearer ${run.token}`);
+  for (const secret of [credentials.password, run.token]) {
+    assert.ok(!JSON.stringify(changes).includes(secret));
+    assert.ok(!JSON.stringify(run.client.getSession()).includes(secret));
+  }
   const copy = run.client.user; copy.role = 'admin';
   assert.equal(run.client.user.role, 'user');
-  // A new browser client cannot recover the previous closure's credential.
   const next = browserHarness();
   assert.equal(await next.client.initialize(), null);
   assert.equal(next.calls.length, 0);
+});
+
+test('registration forwards only validated account fields and accepts the server-created session', async () => {
+  const run = browserHarness();
+  await run.client.register({ ...credentials, name: ' 모험가 ', role: 'admin', token: 'forged', email: 'forged@example.test' });
+  assert.equal(run.calls[0].path, '/v1/auth/register');
+  assert.deepEqual(run.calls[0].body, { ...credentials, name: '모험가' });
+  assert.deepEqual(run.client.user, profile);
+});
+
+test('credential validation bounds Unicode password bytes and rejects invalid fields before network access', async () => {
+  const run = browserHarness();
+  for (const username of ['abc', 'UPPER', '1player', 'with space', 'a'.repeat(33), null]) {
+    assert.throws(() => run.client.login({ ...credentials, username }), error => error.code === 'INVALID_USERNAME');
+  }
+  for (const password of ['short', 'a'.repeat(73), '한'.repeat(25), 'a'.repeat(11) + '\0']) {
+    assert.throws(() => run.client.login({ ...credentials, password }), error => error.code === 'INVALID_PASSWORD');
+  }
+  for (const name of ['', ' ', '한'.repeat(41)]) {
+    assert.throws(() => run.client.register({ ...credentials, name }), error => error.code === 'INVALID_NAME');
+  }
+  assert.equal(run.calls.length, 0);
+  await run.client.register({ ...credentials, password: '😀'.repeat(12) });
+  assert.equal(run.calls[0].body.password, '😀'.repeat(12), '12 Unicode code points within 72 UTF-8 bytes are valid');
+});
+
+test('failed login returns to guest state and an invalid session response is never persisted', async () => {
+  const run = browserHarness();
+  run.respond(() => json({ error: { code: 'invalid_credentials', message: '아이디 또는 비밀번호를 확인해 주세요.' } }, 401));
+  await assert.rejects(run.client.login(credentials), error => error.code === 'invalid_credentials');
+  assert.equal(run.client.status, 'guest');
+  for (const invalid of [session('bad'), { ...session(), expiresAt: 1 }, { ...session(), user: { ...profile, username: undefined } }, { ...session(), user: { ...profile, role: 'forged' } }]) {
+    const writes = [];
+    const client = createAccountClient({ config, desktop: {
+      serviceRequest: async () => ({ status: 200, body: invalid }), setAccountSession: async token => writes.push(token),
+    } });
+    await assert.rejects(client.login(credentials), error => error.code === 'INVALID_RESPONSE');
+    assert.deepEqual(writes, [null]);
+    assert.equal(client.user, null);
+  }
 });
 
 test('Electron restores a main-process session without returning its credential', async () => {
@@ -89,21 +126,16 @@ test('Electron restores a main-process session without returning its credential'
   assert.equal(client.getSession().token, undefined);
 });
 
-test('Electron completes login by handing the one-time token to protected main storage', async () => {
-  const token = sessionToken();
-  const writes = [];
-  const opened = [];
+test('Electron login forwards credentials once and hands only the returned token to protected main storage', async () => {
+  const token = sessionToken(), writes = [], calls = [];
   const client = createAccountClient({ config, desktop: {
     getAccountSession: async () => false,
     setAccountSession: async value => { writes.push(value); return { persistent: true }; },
-    openAccountLogin: async url => opened.push(url),
-    serviceRequest: async ({ path }) => ({ status: 200, body: path.endsWith('/start')
-      ? { flowId: 'native-flow', authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth', expiresIn: 300 }
-      : path.endsWith('/poll') ? { status: 'complete', token } : { user: profile } }),
+    serviceRequest: async value => { calls.push(structuredClone(value)); return { status: 200, body: session(token) }; },
   } });
-  await client.login();
+  await client.login(credentials);
+  assert.deepEqual(calls, [{ method: 'POST', path: '/v1/auth/login', body: credentials }]);
   assert.deepEqual(writes, [token]);
-  assert.equal(opened.length, 1);
   assert.ok(!JSON.stringify(client.getSession()).includes(token));
 });
 
@@ -140,35 +172,19 @@ test('temporary server failures preserve a stored session for a later restore', 
   }
 });
 
-test('an unexpected authorization destination is rejected before opening a browser', async () => {
-  let opened = false;
-  const client = createAccountClient({ config, openLogin: () => { opened = true; },
-    fetchImpl: async () => json({ flowId: 'flow', authorizationUrl: 'https://attacker.example/login', expiresIn: 300 }) });
-  await assert.rejects(client.login(), error => error.code === 'INVALID_RESPONSE');
-  assert.equal(opened, false);
-  assert.equal(client.user, null);
-  assert.equal(client.status, 'guest');
-});
-
-test('cancelling an in-flight login cannot resurrect a completed session', async () => {
-  const pending = deferred();
-  const started = deferred();
-  const writes = [];
+test('cancelling an in-flight credential login cannot resurrect a completed session', async () => {
+  const pending = deferred(), started = deferred(), writes = [];
   const client = createAccountClient({ config, desktop: {
     getAccountSession: async () => false,
-    setAccountSession: async token => { writes.push(token); },
-    openAccountLogin: async () => {},
-    serviceRequest: async ({ path }) => {
-      if (path.endsWith('/start')) return { status: 200, body: { flowId: 'flow', authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth', expiresIn: 300 } };
-      started.resolve();
-      return pending.promise;
-    },
+    setAccountSession: async token => writes.push(token),
+    serviceRequest: async () => { started.resolve(); return pending.promise; },
   } });
-  const login = client.login();
+  const login = client.login(credentials);
+  assert.equal(client.login(credentials), login, 'double submissions share one request');
   const rejected = assert.rejects(login, error => ['CANCELLED', 'SESSION_CHANGED'].includes(error.code));
   await started.promise;
   await client.cancelLogin();
-  pending.resolve({ status: 200, body: { status: 'complete', token: sessionToken(), user: profile } });
+  pending.resolve({ status: 200, body: session() });
   await rejected;
   assert.equal(client.status, 'guest');
   assert.equal(client.user, null);
@@ -176,47 +192,75 @@ test('cancelling an in-flight login cannot resurrect a completed session', async
 });
 
 test('a cancelled pending credential write is cleared after it finishes', async () => {
-  const pending = deferred();
-  const started = deferred();
-  const writes = [];
-  const token = sessionToken();
+  const pending = deferred(), started = deferred(), writes = [], token = sessionToken();
   const client = createAccountClient({ config, desktop: {
     getAccountSession: async () => false,
-    openAccountLogin: async () => {},
-    setAccountSession: async value => {
-      writes.push(value);
-      if (value) { started.resolve(); await pending.promise; }
-    },
-    serviceRequest: async ({ path }) => ({ status: 200, body: path.endsWith('/start')
-      ? { flowId: 'flow', authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth', expiresIn: 300 }
-      : path.endsWith('/poll') ? { status: 'complete', token } : { user: profile } }),
+    setAccountSession: async value => { writes.push(value); if (value) { started.resolve(); await pending.promise; } },
+    serviceRequest: async () => ({ status: 200, body: session(token) }),
   } });
-  const rejected = assert.rejects(client.login(), error => error.code === 'SESSION_CHANGED');
+  const rejected = assert.rejects(client.login(credentials), error => error.code === 'SESSION_CHANGED');
   await started.promise;
-  const cancelled = client.cancelLogin();
-  pending.resolve();
+  const cancelled = client.cancelLogin(); pending.resolve();
   await cancelled; await rejected;
   assert.deepEqual(writes, [token, null]);
   assert.equal(client.user, null);
 });
 
-test('login expiry is bounded even if a provider keeps reporting pending', async () => {
-  let time = 0;
-  let polls = 0;
-  const client = createAccountClient({ config, now: () => time, pollIntervalMs: 100,
-    sleep: async ms => { time += ms; }, openLogin: async () => {},
-    fetchImpl: async url => new URL(url).pathname.endsWith('/start')
-      ? json({ flowId: 'flow', authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth', expiresIn: 1 })
-      : (polls++, json({ status: 'pending' })),
+test('password rotation waits for a game request, keeps its revision, and uses the new token thereafter', async () => {
+  const run = browserHarness(); await run.client.login(credentials);
+  const pending = deferred(), started = deferred(), rotated = sessionToken();
+  let syncs = 0;
+  run.respond(async (path, body, options) => {
+    if (path.endsWith('/sync')) {
+      syncs++;
+      if (syncs === 1) { started.resolve(); await pending.promise; }
+      else assert.equal(options.headers.Authorization, `Bearer ${rotated}`);
+      return json({ revision: 7 + syncs, game: { gold: 120 } });
+    }
+    if (path.endsWith('/password')) {
+      assert.equal(options.headers.Authorization, `Bearer ${run.token}`);
+      assert.deepEqual(body, { currentPassword: credentials.password, newPassword: 'replacement-password-123' });
+      return json(session(rotated));
+    }
   });
-  await assert.rejects(client.login(), error => error.code === 'LOGIN_EXPIRED');
-  assert.equal(polls, 10);
-  assert.equal(client.status, 'guest');
+  const syncing = run.client.syncGame(); await started.promise;
+  const changing = run.client.changePassword({ currentPassword: credentials.password, newPassword: 'replacement-password-123' });
+  assert.equal(run.calls.some(call => call.path.endsWith('/password')), false);
+  pending.resolve(); await syncing; await changing;
+  assert.equal(run.client.revision, 8); assert.deepEqual(run.client.user, profile);
+  await run.client.syncGame(); assert.equal(run.client.revision, 9);
+});
+
+test('wrong current password keeps the account active and is required for password change and deletion', async () => {
+  const run = browserHarness(); await run.client.login(credentials);
+  run.respond(() => json({ error: { code: 'invalid_password', message: '현재 비밀번호를 확인해 주세요.' } }, 403));
+  await assert.rejects(run.client.changePassword({ currentPassword: credentials.password, newPassword: 'replacement-password-123' }), error => error.code === 'invalid_password');
+  await assert.rejects(run.client.deleteAccount({ password: credentials.password }), error => error.code === 'invalid_password');
+  assert.deepEqual(run.client.user, profile);
+  assert.throws(() => run.client.changePassword({ newPassword: credentials.password }), error => error.code === 'INVALID_PASSWORD');
+  await assert.rejects(run.client.deleteAccount({}), error => error.code === 'INVALID_PASSWORD');
+});
+
+test('an old in-flight request cannot clear a newly rotated credential', async () => {
+  const run = browserHarness(); await run.client.login(credentials);
+  const pending = deferred(), started = deferred();
+  run.respond(async path => {
+    if (path === '/v1/me') { started.resolve(); return pending.promise; }
+    if (path.endsWith('/password')) return json(session());
+    return json({ revision: 1, game: {} });
+  });
+  const old = run.client.request('GET', '/v1/me');
+  const rejected = assert.rejects(old, error => error.code === 'SESSION_CHANGED');
+  await started.promise;
+  await run.client.changePassword({ currentPassword: credentials.password, newPassword: 'replacement-password-123' });
+  pending.resolve(json({ error: { code: 'unauthorized', message: '만료된 세션' } }, 401));
+  await rejected;
+  assert.deepEqual(run.client.user, profile); assert.equal(run.client.status, 'authenticated');
 });
 
 test('game sync and actions serialize revisions, and caller fields cannot replace server protocol fields', async () => {
   const run = browserHarness();
-  await run.client.login();
+  await run.client.login(credentials);
   let remoteRevision = 3;
   const actions = [];
   run.respond(async (path, body) => {
@@ -239,7 +283,7 @@ test('game sync and actions serialize revisions, and caller fields cannot replac
 });
 
 test('multi-display presence copies only bounded controls and never forwards character progress', async () => {
-  const run = browserHarness(); await run.client.login();
+  const run = browserHarness(); await run.client.login(credentials);
   run.respond(() => json({ revision: 1, game: { gold: 120 }, newCharacters: [] }));
   const displays = [
     { id: 'primary', x: 1920, y: 0, width: 1920, height: 1040, floorY: 1040, scaleFactor: 2 },
@@ -266,7 +310,7 @@ test('multi-display presence copies only bounded controls and never forwards cha
 });
 
 test('a presence conflict exposes the canonical roster and updates the revision for the next corrected request', async () => {
-  const run = browserHarness(); await run.client.login();
+  const run = browserHarness(); await run.client.login(credentials);
   let conflict = true;
   run.respond((path, body) => {
     if (conflict) return json({ error: { code: 'presence_conflict', message: '다른 기기에서 동료를 보관했어요.' },
@@ -289,7 +333,7 @@ test('a presence conflict exposes the canonical roster and updates the revision 
 
 test('an action without a revision synchronizes first; conflicts surface canonical state without retrying a spend', async () => {
   const run = browserHarness();
-  await run.client.login();
+  await run.client.login(credentials);
   let attempts = 0;
   run.respond((path, body) => {
     if (path.endsWith('/sync')) return json({ game: { gold: 120 }, revision: 1 });
@@ -305,7 +349,7 @@ test('an action without a revision synchronizes first; conflicts surface canonic
 
 test('overlapping slow periodic syncs share one request instead of delaying subsequent commands', async () => {
   const run = browserHarness();
-  await run.client.login();
+  await run.client.login(credentials);
   const pending = deferred();
   let requests = 0;
   run.respond(async () => { requests++; await pending.promise; return json({ game: { gold: 120 }, revision: 8 }); });
@@ -320,7 +364,7 @@ test('overlapping slow periodic syncs share one request instead of delaying subs
 
 test('expired credentials clear the session and queued old-account operations cannot run', async () => {
   const run = browserHarness();
-  await run.client.login();
+  await run.client.login(credentials);
   run.respond(() => json({ error: { code: 'UNAUTHORIZED', message: '로그인이 필요해요.' } }, 401));
   const results = await Promise.allSettled([run.client.syncGame(), run.client.gameAction('pet')]);
   assert.equal(results[0].reason.status, 401);
@@ -331,7 +375,7 @@ test('expired credentials clear the session and queued old-account operations ca
 
 test('network failure pauses account connectivity without silently switching its data to a guest', async () => {
   const run = browserHarness();
-  await run.client.login();
+  await run.client.login(credentials);
   run.respond(() => { throw new Error('socket closed'); });
   await assert.rejects(run.client.syncGame(), error => error.code === 'NETWORK_ERROR');
   assert.equal(run.client.status, 'offline');
@@ -343,7 +387,7 @@ test('network failure pauses account connectivity without silently switching its
 
 test('logout clears local authentication even when revocation cannot reach the server', async () => {
   const run = browserHarness();
-  await run.client.login();
+  await run.client.login(credentials);
   run.respond(() => { throw new Error('offline'); });
   assert.deepEqual(await run.client.logout(), { revoked: false });
   assert.equal(run.client.user, null);
@@ -354,15 +398,15 @@ test('logout clears local authentication even when revocation cannot reach the s
 
 test('account deletion keeps an authenticated session on failure and clears it only after success', async () => {
   const run = browserHarness();
-  await run.client.login();
+  await run.client.login(credentials);
   run.respond(() => json({ error: { code: 'TEMPORARY_FAILURE', message: '잠시 후 다시 시도해 주세요.' } }, 503));
-  await assert.rejects(run.client.deleteAccount(), error => error.status === 503);
+  await assert.rejects(run.client.deleteAccount({ password: credentials.password }), error => error.status === 503);
   assert.equal(run.client.user.id, profile.id);
   run.respond(() => json({ ok: true }));
-  await run.client.deleteAccount();
+  await run.client.deleteAccount({ password: credentials.password });
   assert.equal(run.client.user, null);
   const request = run.calls.findLast(call => call.path === '/v1/account');
-  assert.deepEqual(request.body, {});
+  assert.deepEqual(request.body, { password: credentials.password });
   assert.equal(request.options.headers['Content-Type'], 'application/json');
 });
 
