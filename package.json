@@ -1,6 +1,6 @@
 {
   "name": "monglemong",
-  "version": "0.11.2",
+  "version": "0.11.3",
   "description": "몽글몽 — 바탕화면에서 함께 자라는 작은 모험",
   "private": true,
   "type": "module",

@@ -1,5 +1,5 @@
 ﻿몽글몽 (MongleMong) 유저용 소스에서 Windows EXE 만들기
-게임 버전: 0.11.2
+게임 버전: 0.11.3
 
 이 GitHub 소스는 유저용 클라이언트 전용입니다.
 관리자용과 서버 소스는 별도 비공개 전달본에서 관리합니다.
@@ -10,7 +10,7 @@
    npm도 함께 설치됩니다. 설치 후 터미널을 다시 여세요.
    설치 완료된 게임을 플레이하는 PC에는 Node.js가 필요하지 않습니다.
 
-2. 0.11.2 소스 ZIP을 새 로컬 폴더에 완전히 압축 해제
+2. 0.11.3 소스 ZIP을 새 로컬 폴더에 완전히 압축 해제
    이전 소스 폴더에 덮어 풀면 오래된 파일이 섞일 수 있습니다.
    예: C:\Games\MongleMong
    package.json, package-lock.json, build-windows.cmd가 함께 보여야 합니다.
@@ -37,7 +37,7 @@
    첫 빌드는 다운로드 시간이 필요하며 인터넷 연결이 필요합니다.
    성공하면 결과 폴더가 열립니다.
 
-   release\user\MongleMong-Setup-0.11.2-x64.exe
+   release\user\MongleMong-Setup-0.11.3-x64.exe
 
    다른 사람에게는 이 Setup 설치 파일 하나를 전달하세요.
    win-unpacked 안의 실행 파일만 복사하면 런타임이 빠집니다.
@@ -99,7 +99,7 @@ GitHub에 소스를 올리기 전
      0.11.1 소스에서 수정했으며 Electron 재설치나 저장 초기화는 필요하지 않습니다.
    - 'build' in the application package.json ... is not supported:
      0.11.1 패키징 설정 오류를 0.11.2에서 수정했습니다.
-     0.11.2 ZIP을 새 폴더에 풀고 build-windows.cmd로 다시 제작하세요.
+     0.11.3 ZIP을 새 폴더에 풀고 build-windows.cmd로 다시 제작하세요.
      npm deprecated·author is missed·audit 안내는 이 중단의 원인이 아닙니다.
      이 오류 해결을 위해 npm audit fix --force를 실행할 필요는 없습니다.
    - 다운로드나 검증 실패: 표시된 오류를 해결한 뒤 다시 제작하세요.
@@ -123,20 +123,20 @@ GitHub에 소스를 올리기 전
 
 [업데이트 배포]
 설정 → 업데이트에서 새 버전 확인과 설치 파일 다운로드가 가능합니다.
-Windows에서 유저용 설치 파일을 만든 뒤 npm.cmd run prepare:update -- release/user/MongleMong-Setup-0.11.2-x64.exe 로 배포 자료를 준비하세요.
+Windows에서 유저용 설치 파일을 만든 뒤 npm.cmd run prepare:update -- release/user/MongleMong-Setup-0.11.3-x64.exe 로 배포 자료를 준비하세요.
 관리자 설치 파일은 공개 업데이트 폴더에 올리지 않습니다. 자동 설치 기능은 포함하지 않습니다.
 
-[카페몽 PNG 결과물 검사 오류 — 미출시 수정]
+[카페몽 PNG 결과물 검사 오류 — 0.11.3 수정]
 0.11.2에서 Setup 제작 후 assets/characters/cafemong.png를 찾지 못한다면,
 Windows의 ASAR 경로 처리 오류로 포함된 파일도 누락으로 표시될 수 있습니다.
 수정된 검사 도구는 경로 구분자를 맞추며 카페몽 원본 PNG는 변경하지 않습니다.
 실제 파일 누락·손상·원본 해시 불일치 검사는 계속 유지합니다.
 이 오류 메시지만으로 PNG가 반드시 포함되어 있다고 판단하지는 마세요.
 
-현재 배포한 0.11.2 ZIP에는 이 수정이 포함되어 있지 않습니다.
-로컬 수정은 Unreleased로 관리하며 승인된 다음 배포에 반영합니다.
-ASAR 자료·Windows 경로 처리 검사는 실제 Windows 설치 실행 검증과 다릅니다.
-이번 수정 검증을 위해 EXE를 제작하거나 실제 Windows에서 실행하지 않았습니다.
+0.11.3 소스에는 수정된 검사 도구가 포함되어 있습니다.
+Windows CI는 실제 ASAR 자료의 경로·리소스를 검사합니다.
+EXE 제작·실제 Windows 설치 실행은 별도 검증 대상입니다.
+이번 릴리스에서는 게임 EXE를 제작하거나 설치·실행하지 않았습니다.
 
 검사만 다시 실행할 수 있는 조건:
    수정된 scripts/verify-windows-package.mjs만 교체했습니다.
@@ -146,3 +146,10 @@ ASAR 자료·Windows 경로 처리 검사는 실제 Windows 설치 실행 검증
    node scripts/verify-windows-package.mjs user
 조건이 다르면 수정된 검사 도구를 포함한 소스에서 build-windows.cmd로 전체 빌드하세요.
 결과물 검사를 통과한 뒤 설치 파일을 사용합니다.
+
+[0.11.3 계정 정책 적용]
+비밀번호 최소 길이는 6자이며 UTF-8 최대 72바이트 제한은 유지합니다.
+6~11자 비밀번호를 사용하려면 클라이언트와 PHP 계정 서버 코드를 함께 업데이트하세요.
+DB 스키마 변경이나 기존 비밀번호 재설정은 필요하지 않습니다.
+이전 결과물의 재검사만으로 새 정책이 적용되지는 않습니다.
+0.11.3으로 업데이트할 때는 새 소스로 전체 빌드하세요.

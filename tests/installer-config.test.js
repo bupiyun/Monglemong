@@ -4,6 +4,7 @@ import { cpSync, mkdirSync, readFileSync, mkdtempSync, writeFileSync, rmSync } f
 import { dirname, join, normalize, resolve, win32 } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { tmpdir } from 'node:os';
+import { finished } from 'node:stream/promises';
 import { createRequire } from 'node:module';
 import { variantManifest } from '../scripts/prepare-client.mjs';
 import { readPE, embeddedArchive, assertRuntimeMembers, assertPackagedManifest, verifyRuntimeArchive } from '../scripts/verify-windows-package.mjs';
@@ -122,7 +123,9 @@ async function runtimeArchiveFixture(t, flavor = 'user') {
       writeFileSync(packageFile, await createTransformer(packaged, manifest.build)(packageFile));
       mutate(packaged);
       const archive = join(directory, `app-${sequence}.asar`);
-      await asar.createPackage(packaged, archive);
+      // ASAR resolves with the output stream before its final writes close.
+      const output = await asar.createPackage(packaged, archive);
+      await finished(output);
       t.after(() => asar.uncache(archive));
       return archive;
     },
